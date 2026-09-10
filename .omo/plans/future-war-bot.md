@@ -329,7 +329,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
 
 ### Wave 0 — 基础设施与可观测性
 
-- [ ] 1. 项目脚手架与运行入口
+- [x] 1. 项目脚手架与运行入口
   What to do / Must NOT do: 建立 Python 项目结构（`src/`、`tests/`、`scripts/`、`config/`、`logs/`），`run.sh port` 启动 HTTP 服务（监听 0.0.0.0:port，最小依赖，优先标准库 `http.server` 或 `FastAPI`），依赖锁定；**不要**引入需外网或重型运行时依赖（待《编译运行环境说明》确认）。
   Parallelization: Wave 0 | Blocked by: — | Blocks: 全部
   References: 《接口》开篇「样例：bash run.sh port」；《任务书》§八 超时约束。
@@ -337,7 +337,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=`curl` 得 200 且 JSON 合法；failure=端口占用/畸形 body 时服务不崩溃并返回合法 JSON。Evidence `.omo/evidence/task-1-future-war-bot.log`
   Commit: Y | chore(scaffold): add python bot skeleton and run.sh
 
-- [ ] 2. 接口数据模型与编解码
+- [x] 2. 接口数据模型与编解码
   What to do / Must NOT do: 用 Pydantic/dataclass 定义 `Request`/`Response`/`RoleCommand`/`Role`/`Zone`/`Robot`/`PlayerTask`/`WorldNews`/`Error` 等；JSON 解析与序列化；字段缺省容错（如 `num` 缺省 1、可选字段缺失）。**不要**在解析层抛未捕获异常。
   Parallelization: Wave 0 | Blocked by: 1 | Blocks: 9–13, 23–26
   References: 《接口》§1.1–§1.7、§2.1–§2.3；fixtures `docs/request.txt`、`docs/response.txt`。
@@ -353,7 +353,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=两假 Bot 对局正常结束并给出 `score1/2/3`；failure=Bot 返回非法指令/超时被正确标记且不计入队伍异常（§八）。Evidence `.omo/evidence/task-3-future-war-bot.replay`
   Commit: Y | feat(sim): add local game simulator and mock judge
 
-- [ ] 4. 日志与回放系统
+- [x] 4. 日志与回放系统
   What to do / Must NOT do: 每回合落盘 `(roundNo, Request, Response, Result)` 到 `logs/`；提供回放脚本可确定性重放并 diff。**不要**把日志写入热路径导致 5s 超时。
   Parallelization: Wave 0 | Blocked by: 1 | Blocks: 5, 6, 18, 30
   References: 《接口》§1.1（`lastRoundRoleActionResults`、`lastCmdResult`）；本方案 §4.2（replay 模式）。
@@ -377,7 +377,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=日志无缺回合、指标可解析；failure=异常回合也完整记录（含 judge errors[]）。Evidence `.omo/evidence/task-6-future-war-bot.metrics.csv`
   Commit: Y | feat(observability): ensure complete structured logs and metric lines
 
-- [ ] 7. 配置中心与版本戳
+- [x] 7. 配置中心与版本戳
   What to do / Must NOT do: 集中 `config/default.yaml` 策略参数（建造顺序/武器配比/阈值/预算比例/日志级别/功能开关），带注释与稳定键名；支持 `--profile` 与 env 覆盖；启动打印 `commit / config-hash / profile`。**不要**把可调参数散落在代码里。
   Parallelization: Wave 0 | Blocked by: 1 | Blocks: 全部（横切）
   References: 本方案 §4.3；工作包 1。

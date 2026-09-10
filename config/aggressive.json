@@ -1,0 +1,14 @@
+{
+  "offense": {
+    "enabled": true,
+    "summon_harass_enabled": true,
+    "role_snipe_enabled": true,
+    "all_in_score_gap": 120
+  },
+  "economy": {
+    "emergency_reserve": 60
+  },
+  "defense": {
+    "base_hp_alert_ratio": 0.35
+  }
+}

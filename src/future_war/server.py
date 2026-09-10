@@ -20,6 +20,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import TCPServer
 from typing import Final, TypedDict
 
+from future_war.config import load_config, parse_profile_arg
+
 HOST: Final = "0.0.0.0"
 DEFAULT_PORT: Final = 8080
 # 与判题器 5s 响应预算匹配的 socket 读写上限（docs/任务书.md §八）
@@ -129,9 +131,12 @@ def create_server(port: int) -> JudgeHTTPServer:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """入口：`python -m future_war.server <port>`；port 缺省 8080。"""
+    """入口：`python -m future_war.server [port] [--profile <name>]`；port 缺省 8080。"""
     args = list(sys.argv[1:]) if argv is None else list(argv)
-    port_arg = args[0] if args else None
+    profile, positional = parse_profile_arg(args)
+    config = load_config(profile=profile)
+    print(f"[future-war] stamp {config.stamp()}", file=sys.stderr, flush=True)
+    port_arg = positional[0] if positional else None
     try:
         port = resolve_port(port_arg)
     except ValueError:
