@@ -487,7 +487,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=价格预测方向正确；failure=解析失败回退基础价策略。Evidence `.omo/evidence/task-19-future-war-bot.json`
   Commit: Y | feat(tasks): add official-news price reasoning
 
-- [ ] 20. 长上下文寻宝
+- [x] 20. 长上下文寻宝
   What to do / Must NOT do: 跨天累积 `folkLegends`，推断宝藏地点/所需物品/开启时间；用 `lastSummonTreasureResult`（2=地点/时间错，3=物品错）做探测，必要时穷举物品子集；设投入上限。**不要**盲目反复召唤（合法即消耗物品）。
   Parallelization: Wave 3 | Blocked by: 10, 23 | Blocks: 30
   References: 《任务书》§5.2；《接口》§1.1（结果码）、§2.3（summonTreasure 消耗规则）。

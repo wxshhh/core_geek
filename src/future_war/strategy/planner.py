@@ -11,14 +11,18 @@ from future_war.models import RoleCommand
 from future_war.core.world_view import WorldView
 from future_war.strategy.combat import plan_defense
 from future_war.strategy.economy import EconomyState, plan_economy
+from future_war.strategy.treasure import TreasureState, plan_treasure
 
 
 def plan_turn(
     view: WorldView,
     config: Config | None = None,
     economy_state: EconomyState | None = None,
+    treasure_state: TreasureState | None = None,
 ) -> dict[int, RoleCommand]:
     """按昼夜选择行为模块，返回本回合全角色指令映射。"""
     if view.is_night():
         return plan_defense(view, config)
-    return plan_economy(view, config, economy_state)
+    commands = plan_economy(view, config, economy_state)
+    commands.update(plan_treasure(view, config, treasure_state))
+    return commands

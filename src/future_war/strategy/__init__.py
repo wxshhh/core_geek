@@ -21,15 +21,25 @@ from future_war.strategy.reasoning import (
     parse_official_news,
     unavailable_ores,
 )
+from future_war.strategy.treasure import (
+    TreasureClues,
+    TreasureState,
+    parse_clues,
+    plan_treasure,
+)
 
 __all__ = [
     "NewsEffect",
     "OpponentModel",
     "StrategyBot",
+    "TreasureClues",
+    "TreasureState",
     "forecast_directions",
+    "parse_clues",
     "parse_official_news",
     "plan_defense",
     "plan_economy",
+    "plan_treasure",
     "plan_turn",
     "plan_upgrades",
     "preferred_weapon_cells",
