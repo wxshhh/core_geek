@@ -579,7 +579,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=回归全绿；failure=退化时定位到具体工作包并回滚。Evidence `.omo/evidence/task-30-future-war-bot.csv`
   Commit: Y | tune(strategy): finalize parameters after self-play
 
-- [ ] 31. 容错与超时加固
+- [x] 31. 容错与超时加固
   What to do / Must NOT do: 全局异常捕获、5s 响应预算、畸形/缺失字段兜底、超时降级为安全默认指令；压力测试确保不崩溃。**不要**用裸 `except` 吞异常而不记录。
   Parallelization: Wave 5 | Blocked by: 13, 26 | Blocks: 交付
   References: 《任务书》§八；《接口》全篇。
