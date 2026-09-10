@@ -19,6 +19,7 @@ from future_war.models import Action, Pos, RoleCommand
 from future_war.core.nav import plan_move
 from future_war.core.world_map import chebyshev
 from future_war.core.world_view import WorldView
+from future_war.strategy.sandbox import parse_cmd_result
 
 _ANSWER_MARKER: Final = "ANSWER:"
 _EXPLORE_CMD: Final = "echo explore"
@@ -117,9 +118,9 @@ def _seek_task(view: WorldView, unit, config: Config | None) -> TaskAction:
 def _digest_result(view: WorldView, state: TaskState) -> None:
     if state.pending_cmd is None:
         return
-    result = view.last_cmd_result()
-    if result:
-        state.observations.append(result)
+    result = parse_cmd_result(view.last_cmd_result())
+    if result.output:
+        state.observations.append(result.output)
     state.pending_cmd = None
 
 

@@ -17,7 +17,7 @@ if str(SRC_DIR) not in sys.path:
 from future_war.config import Config  # noqa: E402
 from future_war.models import enum_to_str, parse_request  # noqa: E402
 from future_war.core import WorldModel  # noqa: E402
-from future_war.strategy import SkillLibrary, TaskState, plan_task  # noqa: E402
+from future_war.strategy import SkillLibrary, StrategyBot, TaskState, plan_task  # noqa: E402
 
 
 def _request(*, pioneer_pos=(14, 14), phase_task="", last_cmd="", round_no=1):
@@ -137,6 +137,27 @@ def test_task_accepted_early_in_day() -> None:
     """Given 白天回合充裕，When 规划，Then 接任务。"""
     action = plan_task(_view(pioneer_pos=(14, 15), round_no=1), _config(), TaskState())
     assert enum_to_str(action.commands[10011].action) == "acceptTask"
+
+
+def test_timeout_result_is_tolerated() -> None:
+    """Given 沙盒超时，When 规划，Then 不提交答案且不崩溃。"""
+    state = TaskState()
+    plan_task(_view(phase_task="查询北京天气"), _config(), state)
+    action = plan_task(
+        _view(phase_task="查询北京天气", last_cmd="[TIMEOUT]\npartial", round_no=2),
+        _config(),
+        state,
+    )
+    assert all(
+        enum_to_str(c.action) != "submitAnswer" for c in action.commands.values()
+    )
+
+
+def test_bot_emits_prompt_for_active_task() -> None:
+    """Given 已领任务，When StrategyBot 处理，Then Response 含 prompt 与 executeCmd。"""
+    response = StrategyBot()(parse_request(_request(phase_task="查询北京天气")))
+    assert response.prompt
+    assert response.executeCmd
 
 
 def main() -> int:

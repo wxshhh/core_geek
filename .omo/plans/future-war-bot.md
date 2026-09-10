@@ -529,7 +529,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=正常命令解析；failure=TIMEOUT/TRUNCATED 被识别并触发分片重试。Evidence `.omo/evidence/task-24-future-war-bot.json`
   Commit: Y | feat(sandbox): add sandbox executor and result parser
 
-- [ ] 25. 免费 LLM 窗口利用
+- [x] 25. 免费 LLM 窗口利用
   What to do / Must NOT do: 在 `phaseTask` 非空期间，把排队的战略/寻宝分析搭车发出（不限次不计入）；控制延长任务的代价。**不要**为蹭免费窗口而显著损失速度加成或导致任务超时。
   Parallelization: Wave 4 | Blocked by: 21, 23 | Blocks: 30
   References: 《接口》§1.7；《任务书》§六（速度加成）。
@@ -537,7 +537,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=免费窗口内完成额外分析且配额未变；failure=窗口不可用时走常规配额。Evidence `.omo/evidence/task-25-future-war-bot.json`
   Commit: Y | feat(llm): exploit free LLM window during tasks
 
-- [ ] 26. 认知任务鲁棒性
+- [x] 26. 认知任务鲁棒性
   What to do / Must NOT do: 对 LLM/沙盒的解析失败、空响应、超时、截断做回退（规则兜底/重试/降级）；统一超时预算不拖垮 5s 响应。**不要**让认知模块异常传播导致进程崩溃。
   Parallelization: Wave 4 | Blocked by: 23, 24 | Blocks: 30
   References: 《接口》§1.7、§2.1；《任务书》§八。

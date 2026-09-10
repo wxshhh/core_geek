@@ -10,6 +10,7 @@ from future_war.config import Config
 from future_war.models import Request, Response
 from future_war.core.world import WorldModel
 from future_war.strategy.economy import EconomyState
+from future_war.strategy.llm_manager import LLMManager
 from future_war.strategy.opponent import OpponentModel
 from future_war.strategy.planner import plan_turn
 from future_war.strategy.task_agent import TaskState
@@ -26,15 +27,20 @@ class StrategyBot:
         self._opponent = OpponentModel()
         self._treasure = TreasureState()
         self._task = TaskState()
+        self._llm = LLMManager.from_config(config)
 
     def __call__(self, request: Request) -> Response:
         view = self._model.apply_round(request)
         self._opponent.observe(view)
+        self._llm.sync(view)
         plan = plan_turn(
             view, self._config, self._economy, self._treasure, self._task
         )
+        prompt = plan.prompt
+        if prompt and not self._llm.note_sent(prompt, view):
+            prompt = ""  # 配额不足则不发送（避免 errorCode 5，§1.7）
         return Response(
             roleCommandMap=plan.commands,
-            prompt=plan.prompt,
+            prompt=prompt,
             executeCmd=plan.execute_cmd,
         )
