@@ -13,6 +13,7 @@ from future_war.strategy.builder import (
 )
 from future_war.strategy.combat import plan_defense
 from future_war.strategy.economy import plan_economy
+from future_war.strategy.llm_manager import LLMManager
 from future_war.strategy.opponent import OpponentModel
 from future_war.strategy.planner import TurnPlan, plan_turn
 from future_war.strategy.reasoning import (
@@ -21,6 +22,7 @@ from future_war.strategy.reasoning import (
     parse_official_news,
     unavailable_ores,
 )
+from future_war.strategy.sandbox import CmdResult, parse_cmd_result
 from future_war.strategy.task_agent import (
     SkillLibrary,
     TaskAction,
@@ -35,6 +37,8 @@ from future_war.strategy.treasure import (
 )
 
 __all__ = [
+    "CmdResult",
+    "LLMManager",
     "NewsEffect",
     "OpponentModel",
     "SkillLibrary",
@@ -46,6 +50,7 @@ __all__ = [
     "TurnPlan",
     "forecast_directions",
     "parse_clues",
+    "parse_cmd_result",
     "parse_official_news",
     "plan_defense",
     "plan_economy",

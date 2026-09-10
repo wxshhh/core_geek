@@ -513,7 +513,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
 
 ### Wave 4 — 认知集成
 
-- [ ] 23. LLM 管理器（配额 + 异步 + 模板）
+- [x] 23. LLM 管理器（配额 + 异步 + 模板）
   What to do / Must NOT do: 自维护 3/日配额计数（日初重置）、异步 `prompt`→`llmResp` 关联为状态机、prompt 模板与结构化响应解析、失败回退。**不要**超额调用（避免 errorCode 5）或阻塞等待响应。
   Parallelization: Wave 4 | Blocked by: 2 | Blocks: 19, 20, 21
   References: 《接口》§1.7（配额/errorCode 5）、§2.1（prompt/llmResp）。
@@ -521,7 +521,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=3 次调用后暂停至次日；failure=LLM 返回空/异常时走回退逻辑。Evidence `.omo/evidence/task-23-future-war-bot.json`
   Commit: Y | feat(llm): add quota and async LLM manager
 
-- [ ] 24. 沙盒执行器
+- [x] 24. 沙盒执行器
   What to do / Must NOT do: 构造 `executeCmd`、解析 `lastCmdResult`（`[exitCode:N]`/`[TIMEOUT]`/`[TRUNCATED]`）、管理沙盒会话/文件状态；仅任务期间使用。**不要**在非任务回合发 `executeCmd`。
   Parallelization: Wave 4 | Blocked by: 2 | Blocks: 21
   References: 《接口》§2.1、§1.1（`lastCmdResult` 格式）。
