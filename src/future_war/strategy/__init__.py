@@ -14,12 +14,18 @@ from future_war.strategy.builder import (
 from future_war.strategy.combat import plan_defense
 from future_war.strategy.economy import plan_economy
 from future_war.strategy.opponent import OpponentModel
-from future_war.strategy.planner import plan_turn
+from future_war.strategy.planner import TurnPlan, plan_turn
 from future_war.strategy.reasoning import (
     NewsEffect,
     forecast_directions,
     parse_official_news,
     unavailable_ores,
+)
+from future_war.strategy.task_agent import (
+    SkillLibrary,
+    TaskAction,
+    TaskState,
+    plan_task,
 )
 from future_war.strategy.treasure import (
     TreasureClues,
@@ -31,14 +37,19 @@ from future_war.strategy.treasure import (
 __all__ = [
     "NewsEffect",
     "OpponentModel",
+    "SkillLibrary",
     "StrategyBot",
+    "TaskAction",
+    "TaskState",
     "TreasureClues",
     "TreasureState",
+    "TurnPlan",
     "forecast_directions",
     "parse_clues",
     "parse_official_news",
     "plan_defense",
     "plan_economy",
+    "plan_task",
     "plan_treasure",
     "plan_turn",
     "plan_upgrades",

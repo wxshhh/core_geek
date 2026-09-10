@@ -495,7 +495,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=正确召唤得奖励；failure=错误地点返回 2、错误物品返回 3 且据此更新假设。Evidence `.omo/evidence/task-20-future-war-bot.json`
   Commit: Y | feat(tasks): add long-context treasure hunt
 
-- [ ] 21. 自进化 Agent（沙盒 + LLM 循环 + 技能库）
+- [x] 21. 自进化 Agent（沙盒 + LLM 循环 + 技能库）
   What to do / Must NOT do: `acceptTask`→读 `phaseTask`→规划→`executeCmd` 沙盒探索→读 `lastCmdResult`/`llmResp`→迭代→`submitAnswer`；把成功流程抽象为 SOP/技能存库，同类任务复用加速。**不要**硬编码具体任务；不要离开任务点导致任务中断。
   Parallelization: Wave 3 | Blocked by: 23, 24 | Blocks: 22, 30
   References: 《任务书》§5.3、§五（结束条件）、§六（score1 速度加成）；《接口》§2.1、§1.7。

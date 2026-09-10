@@ -12,6 +12,7 @@ from future_war.core.world import WorldModel
 from future_war.strategy.economy import EconomyState
 from future_war.strategy.opponent import OpponentModel
 from future_war.strategy.planner import plan_turn
+from future_war.strategy.task_agent import TaskState
 from future_war.strategy.treasure import TreasureState
 
 
@@ -24,10 +25,16 @@ class StrategyBot:
         self._economy = EconomyState()
         self._opponent = OpponentModel()
         self._treasure = TreasureState()
+        self._task = TaskState()
 
     def __call__(self, request: Request) -> Response:
         view = self._model.apply_round(request)
         self._opponent.observe(view)
+        plan = plan_turn(
+            view, self._config, self._economy, self._treasure, self._task
+        )
         return Response(
-            roleCommandMap=plan_turn(view, self._config, self._economy, self._treasure)
+            roleCommandMap=plan.commands,
+            prompt=plan.prompt,
+            executeCmd=plan.execute_cmd,
         )
