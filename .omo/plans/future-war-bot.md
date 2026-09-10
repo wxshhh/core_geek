@@ -453,7 +453,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=收入速率提升且按时升级；failure=价格预测错误时回退到基础价策略。Evidence `.omo/evidence/task-15-future-war-bot.replay`
   Commit: Y | feat(economy): optimize routing, sell timing and budget
 
-- [ ] 16. 战斗协同（多武器 + 防溢出 + 配对）
+- [x] 16. 战斗协同（多武器 + 防溢出 + 配对）
   What to do / Must NOT do: 多武器目标分配避免同目标溢出伤害；火箭 AoE 打集群、电磁炮穿透打纵列；BOSS/大型优先；武器-角色最优配对。**不要**让多武器重复瞄准将被击杀的低血目标。
   Parallelization: Wave 2 | Blocked by: 12, 13 | Blocks: 27
   References: 《任务书》§4.5.1、§4.5.4、§4.7.2、§4.4。

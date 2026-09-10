@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Final
 
 from future_war.config import Config
-from future_war.models import Action, Pos, RobotRole, Role, RoleCommand
+from future_war.models import Action, Pos, RobotRole, Role, RoleCommand, enum_to_str
 from future_war.core.nav import resolve_moves
 from future_war.core.world_map import chebyshev
 from future_war.core.world_view import WorldView
@@ -33,6 +33,7 @@ def plan_defense(
     assigned: set[int] = set()
     mobile = list(view.own_workers()) + list(view.own_pioneer())
     robots = list(view.robots_targeting_us())
+    armed: list[tuple[Role, Role]] = []
     for weapon in sorted(view.own_weapons(), key=lambda w: w.id):
         if weapon.cooldown > 0:
             continue
@@ -44,13 +45,13 @@ def plan_defense(
                 assigned.add(free.id)
             continue
         assigned.add(controller.id)
-        target = _nearest_within(robots, weapon.pos, weapon.attackRange)
-        if target is not None:
-            commands[weapon.id] = RoleCommand(
-                action=Action.ATTACK,
-                controllerId=str(controller.id),
-                targetPos=(target.pos,),
-            )
+        armed.append((weapon, controller))
+    for weapon, controller, target in _select_targets(armed, robots, config):
+        commands[weapon.id] = RoleCommand(
+            action=Action.ATTACK,
+            controllerId=str(controller.id),
+            targetPos=(target.pos,),
+        )
     _send_home(view, mobile, assigned, goals)
     for uid, step in resolve_moves(view, goals).items():
         if step is not None:
@@ -69,6 +70,52 @@ def _send_home(
             continue
         if chebyshev(role.pos, base) > BASE_HOLD_RANGE:
             goals[role.id] = base
+
+
+_ROBOT_KINDS: Final = {
+    "boss": "bossRobot",
+    "large": "largeRobot",
+    "medium": "middleRobot",
+    "small": "smallRobot",
+}
+_DEFAULT_PRIORITY: Final = ("bossRobot", "largeRobot", "middleRobot", "smallRobot")
+
+
+def _select_targets(
+    armed: list[tuple[Role, Role]], robots: list[RobotRole], config: Config | None
+) -> list[tuple[Role, Role, RobotRole]]:
+    """按优先级选目标，并避免多武器对同一目标溢出伤害（combat.overkill_avoidance）。"""
+    order = _priority_order(config)
+    claimed: dict[int, int] = {}
+    selections: list[tuple[Role, Role, RobotRole]] = []
+    for weapon, controller in armed:
+        in_range = [
+            r for r in robots if chebyshev(r.pos, weapon.pos) <= weapon.attackRange
+        ]
+        if not in_range:
+            continue
+        fresh = [r for r in in_range if r.health - claimed.get(r.id, 0) > 0]
+        target = min(
+            fresh or in_range,
+            key=lambda r: (_priority_key(r, order), chebyshev(r.pos, weapon.pos), r.id),
+        )
+        claimed[target.id] = claimed.get(target.id, 0) + weapon.attackPower
+        selections.append((weapon, controller, target))
+    return selections
+
+
+def _priority_order(config: Config | None) -> tuple[str, ...]:
+    value = config.get("combat.target_priority") if config is not None else None
+    if isinstance(value, (list, tuple)):
+        mapped = tuple(_ROBOT_KINDS.get(str(v), "") for v in value)
+        if mapped and all(mapped):
+            return mapped
+    return _DEFAULT_PRIORITY
+
+
+def _priority_key(robot: RobotRole, order: tuple[str, ...]) -> int:
+    kind = enum_to_str(robot.roleType)
+    return order.index(kind) if kind in order else len(order)
 
 
 def _nearest_within(

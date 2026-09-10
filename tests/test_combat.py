@@ -45,13 +45,18 @@ def _role(
 
 
 def _robot(
-    robot_id: int, robot_type: str, x: int, y: int, target: str = "challenger"
+    robot_id: int,
+    robot_type: str,
+    x: int,
+    y: int,
+    target: str = "challenger",
+    health: int = 40,
 ) -> dict[str, Any]:
     return {
         "id": robot_id,
         "pos": _pos(x, y),
         "roleType": robot_type,
-        "health": 40,
+        "health": health,
         "abnormalState": "",
         "targetTeam": target,
     }
@@ -171,6 +176,40 @@ def test_idle_role_returns_toward_base() -> None:
     view = _view(NIGHT_ROUND, roles, [])
     commands = plan_defense(view)
     assert enum_to_str(commands[10010].action) == "move"
+
+
+def test_target_priority_prefers_boss_over_nearer_small() -> None:
+    """Given BOSS 与更近的小型机都在射程内，When 选目标，Then 优先 BOSS。"""
+    roles = [STATION, _rocket(), _role(10010, "worker", 22, 20, 220)]
+    robots = [
+        _robot(30001, "smallRobot", 24, 20),
+        _robot(30002, "bossRobot", 28, 20, health=800),
+    ]
+    view = _view(NIGHT_ROUND, roles, robots)
+    assert plan_defense(view)[10040].targetPos == (Pos(28, 20),)
+
+
+def test_overkill_avoidance_assigns_distinct_targets() -> None:
+    """Given 两武器可击杀两机器人，When 选目标，Then 各打不同目标（防溢出）。"""
+    roles = [
+        STATION,
+        _role(10030, "railgun", 21, 20, 1000, level=1, attackPower=20, attackRange=10),
+        _role(10040, "rocket", 21, 22, 1000, level=1, attackPower=20, attackRange=10),
+        _role(10010, "worker", 22, 20, 220),
+        _role(10012, "worker", 22, 22, 220),
+    ]
+    robots = [
+        _robot(30001, "smallRobot", 25, 20, health=20),
+        _robot(30002, "smallRobot", 25, 22, health=20),
+    ]
+    view = _view(NIGHT_ROUND, roles, robots)
+    targets = [
+        c.targetPos[0]
+        for c in plan_defense(view).values()
+        if enum_to_str(c.action) == "attack"
+    ]
+    assert len(targets) == 2
+    assert len(set(targets)) == 2
 
 
 def main() -> int:
