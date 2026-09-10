@@ -419,7 +419,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=采集→贩卖金币增加；failure=背包满/金币不足时 `buy`/`build` 失败被识别且不报异常。Evidence `.omo/evidence/task-11-future-war-bot.replay`
   Commit: Y | feat(economy): add mining, selling and building basics
 
-- [ ] 12. 基础防御（夜晚武器操控）
+- [x] 12. 基础防御（夜晚武器操控）
   What to do / Must NOT do: 夜晚为每座武器分配 1 名角色操控（站周围 1 格）；按机器人当前坐标选目标 `attack`（含 `controllerId`、`targetPos`）；火箭按冷却发火。**不要**白天攻击（非法）、不要重复操控同一武器。
   Parallelization: Wave 1 | Blocked by: 9, 10 | Blocks: 16
   References: 《任务书》§4.4（攻击仅夜/需操控/结算顺序）、§4.5.4；《接口》§2.2–§2.3。
