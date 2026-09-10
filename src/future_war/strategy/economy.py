@@ -49,8 +49,11 @@ def plan_economy(
     plan = _weapon_plan(config)
     commands: dict[int, RoleCommand] = {}
     goals: dict[int, Pos] = {}
+    assignments = _assign_mines(view, view.own_workers())
     for worker in view.own_workers():
-        cmd, goal = _plan_worker(view, worker, max_weapons, plan, state)
+        cmd, goal = _plan_worker(
+            view, worker, max_weapons, plan, state, assignments.get(worker.id)
+        )
         if cmd is not None:
             commands[worker.id] = cmd
         elif goal is not None:
@@ -75,6 +78,7 @@ def _plan_worker(
     max_weapons: int,
     plan: tuple[str, ...],
     state: EconomyState,
+    mine: Pos | None,
 ) -> tuple[RoleCommand | None, Pos | None]:
     build = _plan_build(view, worker, max_weapons, plan, state)
     if build is not None:
@@ -83,7 +87,7 @@ def _plan_worker(
         sold = _plan_sell(view, worker)
         if sold is not None:
             return sold
-    return _plan_collect(view, worker)
+    return _plan_collect(worker, mine)
 
 
 def _plan_build(
@@ -121,13 +125,28 @@ def _plan_sell(
     return None, vendor
 
 
-def _plan_collect(view: WorldView, worker: Role) -> tuple[RoleCommand | None, Pos | None]:
-    mine = _nearest_mine(view, worker)
+def _plan_collect(worker: Role, mine: Pos | None) -> tuple[RoleCommand | None, Pos | None]:
     if mine is None:
         return None, None
     if chebyshev(worker.pos, mine) <= 1:
         return RoleCommand(action=Action.COLLECT, targetPos=(mine,)), None
     return None, mine
+
+
+def _assign_mines(view: WorldView, workers: tuple[Role, ...]) -> dict[int, Pos]:
+    """给每个工人分配互不相同的最近矿区（矿少时允许共享），避免同矿争夺。"""
+    mines = [zone.pos for zone in view.mines()]
+    if not mines:
+        return {}
+    available = list(mines)
+    assignment: dict[int, Pos] = {}
+    for worker in sorted(workers, key=lambda w: w.id):
+        if not available:
+            available = list(mines)
+        nearest = min(available, key=lambda m: (chebyshev(worker.pos, m), m.x, m.y))
+        assignment[worker.id] = nearest
+        available.remove(nearest)
+    return assignment
 
 
 def _adjacent_cell(
@@ -162,13 +181,6 @@ def _nearest_cell(
         candidates,
         key=lambda c: (chebyshev(worker.pos, c), rank.get(c, 1 << 30), c.x, c.y),
     )
-
-
-def _nearest_mine(view: WorldView, worker: Role) -> Pos | None:
-    mines = [zone.pos for zone in view.mines()]
-    if not mines:
-        return None
-    return min(mines, key=lambda m: (chebyshev(worker.pos, m), m.x, m.y))
 
 
 def _best_ore(worker: Role) -> str | None:

@@ -190,6 +190,17 @@ def test_two_workers_do_not_target_same_cell() -> None:
     assert len(targets) == len(set(targets))
 
 
+def test_workers_assigned_distinct_mines() -> None:
+    """Given 两工人与两矿区，When 规划经济，Then 分派不同矿区（避免同矿争夺）。"""
+    view = _view(
+        [STATION, _role(10010, "worker", 5, 5, 220), _role(10012, "worker", 5, 6, 220)],
+        zones=[_mine(6, 5), _mine(6, 6)],
+    )
+    commands = plan_economy(view)
+    targets = {commands[uid].targetPos[0] for uid in (10010, 10012)}
+    assert len(targets) == 2
+
+
 def main() -> int:
     """零依赖测试运行器：执行全部 test_* 函数并报告。"""
     test_funcs = [

@@ -445,7 +445,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=布局生效并提升存活天数；failure=蓝/黄区用错导致建造失败被检测并纠正。Evidence `.omo/evidence/task-14-future-war-bot.replay`
   Commit: Y | feat(build): add layout planner and upgrade sequencing
 
-- [ ] 15. 经济优化（路线 + 卖出时机 + 预算）
+- [x] 15. 经济优化（路线 + 卖出时机 + 预算）
   What to do / Must NOT do: 动态最近矿分配、双工人分流防碰撞、按预测价格择时卖出、按优先级分配金币（武器升级>基地>围墙）。**不要**囤积到错过升级窗口。
   Parallelization: Wave 2 | Blocked by: 11, 13 | Blocks: 19, 27–31
   References: 《任务书》§4.1、§4.6.1、§5.1、§4.5.1。
