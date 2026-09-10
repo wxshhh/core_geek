@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "active_work_id": "future-war-bot",
+  "works": {
+    "future-war-bot": {
+      "work_id": "future-war-bot",
+      "active_plan": ".omo/plans/future-war-bot.md",
+      "plan_name": "future-war-bot",
+      "session_ids": [],
+      "status": "active",
+      "worktree_path": null
+    }
+  }
+}

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "future-war"
+version = "0.1.0"
+description = "《未来战争》v1.0 参赛 Bot：判题器每回合轮询的长期驻留 HTTP 服务"
+requires-python = ">=3.10"
+dependencies = [] # 运行时零第三方依赖（仅 Python 标准库 http.server）
+
+[dependency-groups]
+dev = ["pytest>=8"] # 仅测试用；无 pytest 时可直接 `python3 tests/test_server.py`
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["src"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
