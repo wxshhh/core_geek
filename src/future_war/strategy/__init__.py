@@ -15,14 +15,24 @@ from future_war.strategy.combat import plan_defense
 from future_war.strategy.economy import plan_economy
 from future_war.strategy.opponent import OpponentModel
 from future_war.strategy.planner import plan_turn
+from future_war.strategy.reasoning import (
+    NewsEffect,
+    forecast_directions,
+    parse_official_news,
+    unavailable_ores,
+)
 
 __all__ = [
+    "NewsEffect",
     "OpponentModel",
     "StrategyBot",
+    "forecast_directions",
+    "parse_official_news",
     "plan_defense",
     "plan_economy",
     "plan_turn",
     "plan_upgrades",
     "preferred_weapon_cells",
+    "unavailable_ores",
     "upgrade_order",
 ]

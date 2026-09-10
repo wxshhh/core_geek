@@ -479,7 +479,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
 
 ### Wave 3 — 任务系统
 
-- [ ] 19. 推理类（新闻→价格/可采性）
+- [x] 19. 推理类（新闻→价格/可采性）
   What to do / Must NOT do: 解析 `officialNews` 为结构化影响（矿种、方向、持续、是否停采），联动经济（预囤涨价矿、避开停采矿、停采前抢采）。**不要**依赖精确量级（规则未给）。
   Parallelization: Wave 3 | Blocked by: 15, 23 | Blocks: 30
   References: 《任务书》§4.8、§5.1；《接口》§1.6。
