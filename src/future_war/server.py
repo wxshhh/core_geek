@@ -123,7 +123,7 @@ class JudgeRequestHandler(BaseHTTPRequestHandler):
                 return None
         return data if isinstance(data, dict) else None
 
-    def _respond(self, request: dict[str, object] | None) -> JudgeResponse:
+    def _respond(self, request: dict[str, object] | None) -> dict[str, object]:
         """运行策略 Bot 得到本回合指令；任何失败都回退为空指令（§八）。"""
         bot = getattr(self.server, "bot", None)
         if bot is None or request is None:
@@ -133,10 +133,10 @@ class JudgeRequestHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BROAD_EXCEPT_OK — 进程绝不能崩溃（§八）
             self._emit(EventCode.X_01, f"strategy error: {exc}")
             return EMPTY_RESPONSE
-        return serialize_response(response)  # type: ignore[return-value]
+        return serialize_response(response)
 
     def _observe(
-        self, request: dict[str, object] | None, response: JudgeResponse
+        self, request: dict[str, object] | None, response: dict[str, object]
     ) -> None:
         """写入本回合日志与指标；畸形请求已由 _parse_request 记异常行。"""
         observer = getattr(self.server, "observer", None)
@@ -154,7 +154,7 @@ class JudgeRequestHandler(BaseHTTPRequestHandler):
             observer.emit(code, message)
         print(f"[future-war] WARN {message}", file=sys.stderr, flush=True)
 
-    def _send_response(self, payload: JudgeResponse) -> None:
+    def _send_response(self, payload: dict[str, object]) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
