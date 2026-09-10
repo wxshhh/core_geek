@@ -437,7 +437,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
 
 ### Wave 2 — 策略引擎
 
-- [ ] 14. 建造规划（武器布局 + chokepoint + 升级顺序）
+- [x] 14. 建造规划（武器布局 + chokepoint + 升级顺序）
   What to do / Must NOT do: 依据可建造区与地形生成武器/围墙布局（入口 chokepoint、火箭居中、电磁炮守入口）；实现升级券使用顺序（火箭 L3 优先）。**不要**用整圈围墙堵死自己角色路径。
   Parallelization: Wave 2 | Blocked by: 13 | Blocks: 16, 27–31
   References: 《任务书》§4.1、§4.5.1、§4.5.4、§4.6.3。

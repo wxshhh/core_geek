@@ -20,6 +20,7 @@ from future_war.models import Action, Pos, Role, RoleCommand
 from future_war.core.nav import resolve_moves
 from future_war.core.world_map import chebyshev
 from future_war.core.world_view import WorldView
+from future_war.strategy.builder import preferred_weapon_cells
 
 WEAPON_COST: Final = 25
 SELL_THRESHOLD: Final = 5
@@ -96,11 +97,12 @@ def _plan_build(
         return None
     kind = plan[min(len(view.own_weapons()), len(plan) - 1)]
     cells = view.blue_build_cells()
-    cell = _adjacent_cell(view, worker, cells, state.failed_build_cells)
+    rank = {cell: i for i, cell in enumerate(preferred_weapon_cells(view))}
+    cell = _adjacent_cell(view, worker, cells, state.failed_build_cells, rank)
     if cell is not None:
         state.pending_build[worker.id] = (cell.x, cell.y)
         return RoleCommand(action=Action.BUILD, name=kind, targetPos=(cell,)), None
-    goal = _nearest_cell(worker, cells, state.failed_build_cells)
+    goal = _nearest_cell(worker, cells, state.failed_build_cells, rank)
     return (None, goal) if goal is not None else None
 
 
@@ -129,7 +131,11 @@ def _plan_collect(view: WorldView, worker: Role) -> tuple[RoleCommand | None, Po
 
 
 def _adjacent_cell(
-    view: WorldView, worker: Role, cells: frozenset[Pos], failed: set[Cell]
+    view: WorldView,
+    worker: Role,
+    cells: frozenset[Pos],
+    failed: set[Cell],
+    rank: dict[Pos, int],
 ) -> Pos | None:
     blocked = view.obstacles()
     candidates = [
@@ -139,15 +145,22 @@ def _adjacent_cell(
         and cell not in blocked
         and (cell.x, cell.y) not in failed
     ]
-    return min(candidates, key=lambda c: (c.x, c.y)) if candidates else None
-
-
-def _nearest_cell(worker: Role, cells: frozenset[Pos], failed: set[Cell]) -> Pos | None:
-    candidates = [c for c in cells if (c.x, c.y) not in failed]
     return (
-        min(candidates, key=lambda c: (chebyshev(worker.pos, c), c.x, c.y))
+        min(candidates, key=lambda c: (rank.get(c, 1 << 30), c.x, c.y))
         if candidates
         else None
+    )
+
+
+def _nearest_cell(
+    worker: Role, cells: frozenset[Pos], failed: set[Cell], rank: dict[Pos, int]
+) -> Pos | None:
+    candidates = [c for c in cells if (c.x, c.y) not in failed]
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda c: (chebyshev(worker.pos, c), rank.get(c, 1 << 30), c.x, c.y),
     )
 
 
