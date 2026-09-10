@@ -62,5 +62,6 @@ DEFAULT_CONFIG: Final[dict[str, JsonValue]] = {
     },
     "llm": {"daily_quota": 3, "free_window_enabled": True},
     "nav": {"replan_interval": 5, "collision_avoidance": True},
+    "world": {"inference": {"blue_radius": 3, "yellow_radius": 6}},
     "features": {"replay_enabled": True, "metric_line_enabled": True},
 }

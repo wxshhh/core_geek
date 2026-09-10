@@ -4,19 +4,34 @@
     "trace_enabled": false
   },
   "build": {
-    "order": ["weapons", "walls", "upgrades"],
+    "order": [
+      "weapons",
+      "walls",
+      "upgrades"
+    ],
     "day1_max_weapons": 3,
     "weapon_mix": {
       "rocket": 1,
       "railgun": 2,
       "gatling": 0
     },
-    "upgrade_order": ["rocket_l3", "railgun_l3", "base_l2", "base_l3", "wall_l2"],
+    "upgrade_order": [
+      "rocket_l3",
+      "railgun_l3",
+      "base_l2",
+      "base_l3",
+      "wall_l2"
+    ],
     "chokepoint_count": 2,
     "wall_labyrinth_depth": 3
   },
   "combat": {
-    "target_priority": ["boss", "large", "medium", "small"],
+    "target_priority": [
+      "boss",
+      "large",
+      "medium",
+      "small"
+    ],
     "overkill_avoidance": true,
     "rocket_aoe_threshold": 3,
     "controller_pairing": "range_first",
@@ -63,5 +78,11 @@
   "features": {
     "replay_enabled": true,
     "metric_line_enabled": true
+  },
+  "world": {
+    "inference": {
+      "blue_radius": 3,
+      "yellow_radius": 6
+    }
   }
 }
