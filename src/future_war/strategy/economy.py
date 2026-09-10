@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Final
 
 from future_war.config import Config
@@ -26,16 +27,29 @@ _WEAPON_ORDER: Final = ("rocket", "railgun", "gatling")
 _DEFAULT_PLAN: Final = ("rocket", "railgun", "railgun")
 _MINE_KINDS: Final = frozenset({"stone", "iron", "copper"})
 _ORE_VALUE: Final = {"stone": 1, "iron": 3, "copper": 5}
+Cell = tuple[int, int]
 
 
-def plan_economy(view: WorldView, config: Config | None = None) -> dict[int, RoleCommand]:
+@dataclass
+class EconomyState:
+    """跨回合经济状态：建造失败候选格黑名单 + 待验证建造。"""
+
+    failed_build_cells: set[Cell] = field(default_factory=set)
+    pending_build: dict[int, Cell] = field(default_factory=dict)
+
+
+def plan_economy(
+    view: WorldView, config: Config | None = None, state: EconomyState | None = None
+) -> dict[int, RoleCommand]:
     """为所有工人产出本回合经济指令（采矿/贩卖/建造 + 移动）。"""
+    state = state if state is not None else EconomyState()
+    _digest_feedback(view, state)
     max_weapons = _int_config(config, "build.day1_max_weapons", 3)
     plan = _weapon_plan(config)
     commands: dict[int, RoleCommand] = {}
     goals: dict[int, Pos] = {}
     for worker in view.own_workers():
-        cmd, goal = _plan_worker(view, worker, max_weapons, plan)
+        cmd, goal = _plan_worker(view, worker, max_weapons, plan, state)
         if cmd is not None:
             commands[worker.id] = cmd
         elif goal is not None:
@@ -46,10 +60,22 @@ def plan_economy(view: WorldView, config: Config | None = None) -> dict[int, Rol
     return commands
 
 
+def _digest_feedback(view: WorldView, state: EconomyState) -> None:
+    """读上回合结果：建造失败的候选格拉黑。"""
+    for uid, cell in list(state.pending_build.items()):
+        if view.action_ok(uid) is False:
+            state.failed_build_cells.add(cell)
+        state.pending_build.pop(uid, None)
+
+
 def _plan_worker(
-    view: WorldView, worker: Role, max_weapons: int, plan: tuple[str, ...]
+    view: WorldView,
+    worker: Role,
+    max_weapons: int,
+    plan: tuple[str, ...],
+    state: EconomyState,
 ) -> tuple[RoleCommand | None, Pos | None]:
-    build = _plan_build(view, worker, max_weapons, plan)
+    build = _plan_build(view, worker, max_weapons, plan, state)
     if build is not None:
         return build
     if _ore_count(worker) >= SELL_THRESHOLD:
@@ -60,15 +86,21 @@ def _plan_worker(
 
 
 def _plan_build(
-    view: WorldView, worker: Role, max_weapons: int, plan: tuple[str, ...]
+    view: WorldView,
+    worker: Role,
+    max_weapons: int,
+    plan: tuple[str, ...],
+    state: EconomyState,
 ) -> tuple[RoleCommand | None, Pos | None] | None:
     if len(view.own_weapons()) >= max_weapons or view.gold() < WEAPON_COST:
         return None
     kind = plan[min(len(view.own_weapons()), len(plan) - 1)]
-    cell = _adjacent_cell(view, worker, view.blue_build_cells())
+    cells = view.blue_build_cells()
+    cell = _adjacent_cell(view, worker, cells, state.failed_build_cells)
     if cell is not None:
+        state.pending_build[worker.id] = (cell.x, cell.y)
         return RoleCommand(action=Action.BUILD, name=kind, targetPos=(cell,)), None
-    goal = _nearest_cell(worker, view.blue_build_cells())
+    goal = _nearest_cell(worker, cells, state.failed_build_cells)
     return (None, goal) if goal is not None else None
 
 
@@ -96,17 +128,26 @@ def _plan_collect(view: WorldView, worker: Role) -> tuple[RoleCommand | None, Po
     return None, mine
 
 
-def _adjacent_cell(view: WorldView, worker: Role, cells: frozenset[Pos]) -> Pos | None:
+def _adjacent_cell(
+    view: WorldView, worker: Role, cells: frozenset[Pos], failed: set[Cell]
+) -> Pos | None:
     blocked = view.obstacles()
     candidates = [
-        cell for cell in cells if chebyshev(worker.pos, cell) == 1 and cell not in blocked
+        cell
+        for cell in cells
+        if chebyshev(worker.pos, cell) == 1
+        and cell not in blocked
+        and (cell.x, cell.y) not in failed
     ]
     return min(candidates, key=lambda c: (c.x, c.y)) if candidates else None
 
 
-def _nearest_cell(worker: Role, cells: frozenset[Pos]) -> Pos | None:
+def _nearest_cell(worker: Role, cells: frozenset[Pos], failed: set[Cell]) -> Pos | None:
+    candidates = [c for c in cells if (c.x, c.y) not in failed]
     return (
-        min(cells, key=lambda c: (chebyshev(worker.pos, c), c.x, c.y)) if cells else None
+        min(candidates, key=lambda c: (chebyshev(worker.pos, c), c.x, c.y))
+        if candidates
+        else None
     )
 
 

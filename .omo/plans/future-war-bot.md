@@ -427,7 +427,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=机器人被击杀计入 `score2`；failure=无目标时保持待命且不产生非法指令。Evidence `.omo/evidence/task-12-future-war-bot.replay`
   Commit: Y | feat(combat): add night weapon control baseline
 
-- [ ] 13. 端到端存活基线
+- [x] 13. 端到端存活基线
   What to do / Must NOT do: 整合 9–12，在模拟器中完成「建武器→采资源→夜晚防守」闭环并存活到第 N 天，并输出日志与摘要。**不要**在此阶段引入任务/LLM/进攻。
   Parallelization: Wave 1 | Blocked by: 3, 11, 12 | Blocks: 14–18
   References: 《任务书》§4.7（波次）、§六（生存分）；本方案 §4.1/§4.2（日志/摘要）。

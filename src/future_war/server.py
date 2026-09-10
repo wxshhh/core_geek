@@ -21,9 +21,10 @@ from socketserver import TCPServer
 from typing import Final, TypedDict
 
 from future_war.config import load_config, parse_profile_arg
-from future_war.models import remove_trailing_commas
+from future_war.models import parse_request, remove_trailing_commas, serialize_response
 from future_war.observability.events import EventCode
 from future_war.observability.round_metrics import RoundObserver
+from future_war.strategy import StrategyBot
 
 HOST: Final = "0.0.0.0"
 DEFAULT_PORT: Final = 8080
@@ -62,6 +63,7 @@ class JudgeHTTPServer(ThreadingHTTPServer):
     """
 
     observer: RoundObserver | None = None
+    bot: StrategyBot | None = None
 
     def server_bind(self) -> None:
         """完成 bind 并登记 server_name/port，跳过 getfqdn。"""
@@ -77,10 +79,11 @@ class JudgeRequestHandler(BaseHTTPRequestHandler):
     timeout = SOCKET_TIMEOUT_SECONDS
 
     def do_POST(self) -> None:
-        """POST 任意路径：解析请求体（容忍畸形 JSON），落盘回合并返回 Response。"""
+        """POST 任意路径：解析请求体，规划指令，落盘回合并返回 Response。"""
         request = self._parse_request(self._read_body())
-        self._observe(request)
-        self._send_response(EMPTY_RESPONSE)
+        response = self._respond(request)
+        self._observe(request, response)
+        self._send_response(response)
 
     def handle_timeout(self) -> None:
         """读/写超时仍返回合法 Response，避免被判「响应格式错误」（§八）。"""
@@ -120,7 +123,21 @@ class JudgeRequestHandler(BaseHTTPRequestHandler):
                 return None
         return data if isinstance(data, dict) else None
 
-    def _observe(self, request: dict[str, object] | None) -> None:
+    def _respond(self, request: dict[str, object] | None) -> JudgeResponse:
+        """运行策略 Bot 得到本回合指令；任何失败都回退为空指令（§八）。"""
+        bot = getattr(self.server, "bot", None)
+        if bot is None or request is None:
+            return EMPTY_RESPONSE
+        try:
+            response = bot(parse_request(request))
+        except Exception as exc:  # noqa: BROAD_EXCEPT_OK — 进程绝不能崩溃（§八）
+            self._emit(EventCode.X_01, f"strategy error: {exc}")
+            return EMPTY_RESPONSE
+        return serialize_response(response)  # type: ignore[return-value]
+
+    def _observe(
+        self, request: dict[str, object] | None, response: JudgeResponse
+    ) -> None:
         """写入本回合日志与指标；畸形请求已由 _parse_request 记异常行。"""
         observer = getattr(self.server, "observer", None)
         if observer is None or request is None:
@@ -128,7 +145,7 @@ class JudgeRequestHandler(BaseHTTPRequestHandler):
         round_no = request.get("roundNo")
         if not isinstance(round_no, int) or isinstance(round_no, bool):
             round_no = 0
-        observer.observe(round_no, request, EMPTY_RESPONSE)
+        observer.observe(round_no, request, response)
 
     def _emit(self, code: EventCode, message: str) -> None:
         """畸形请求不计入队伍异常（§八）：记结构化行并向 stderr 告警。"""
@@ -151,11 +168,16 @@ def resolve_port(port_arg: str | None) -> int:
     return DEFAULT_PORT if port_arg is None else int(port_arg)
 
 
-def create_server(port: int, observer: RoundObserver | None = None) -> JudgeHTTPServer:
+def create_server(
+    port: int,
+    observer: RoundObserver | None = None,
+    bot: StrategyBot | None = None,
+) -> JudgeHTTPServer:
     """构建监听 HOST:port 的多线程 HTTP 服务（工作线程随主进程退出）。"""
     server = JudgeHTTPServer((HOST, port), JudgeRequestHandler)
     server.daemon_threads = True
     server.observer = observer
+    server.bot = bot
     return server
 
 
@@ -167,6 +189,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     observer = RoundObserver.from_config(config)
     observer.emit(EventCode.I_01, "startup", stamp=config.stamp(), profile=config.profile)
     print(f"[future-war] stamp {config.stamp()}", file=sys.stderr, flush=True)
+    bot = StrategyBot(config)
     port_arg = positional[0] if positional else None
     try:
         port = resolve_port(port_arg)
@@ -179,7 +202,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not 0 <= port <= 65535:
         print(f"[future-war] ERROR port {port} out of range 0-65535", file=sys.stderr)
         return 2
-    server = create_server(port, observer)
+    server = create_server(port, observer, bot)
     print(
         f"[future-war] listening on {HOST}:{port} (pid={os.getpid()})",
         file=sys.stderr,

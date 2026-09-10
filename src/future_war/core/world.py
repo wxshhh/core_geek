@@ -117,7 +117,7 @@ class WorldModel:
 
     def _apply(self, request: Request) -> WorldView:
         round_no = request.roundNo
-        raw = request.raw
+        raw = request.raw or request.to_dict()
         fallbacks: list[str] = []
 
         previous_team = self._cache.team

@@ -46,7 +46,7 @@ def station_of(roles: tuple[Role, ...]) -> Role | None:
 
 def merge_round(cache: FieldCache, request: Request, fallbacks: list[str]) -> None:
     """把本回合 Request 合并进 cache：存在则更新，缺失则记录回退保持原值。"""
-    raw = request.raw
+    raw = request.raw or request.to_dict()
     team = request.teamOur.type
     if cache.team is not None and team != cache.team:
         # 半场互换（任务书 §一）：换边后基地/可建造区全部重建
