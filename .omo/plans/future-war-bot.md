@@ -345,7 +345,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=fixture 往返 round-trip 相等；failure=删字段/加未知字段仍能解析（或明确报可捕获错误）。Evidence `.omo/evidence/task-2-future-war-bot.json`
   Commit: Y | feat(api): add request/response models and codec
 
-- [ ] 3. 本地游戏模拟器 + mock 判题器
+- [x] 3. 本地游戏模拟器 + mock 判题器
   What to do / Must NOT do: 实现《任务书》规则核心（地图/视野/移动碰撞/采集/建造/攻击结算/昼夜/机器人波次/任务点/寻宝结果码）或可扩展子集；mock 判题器按回合发 Request、收 Response、推进状态、记录结果。**不要**追求与官方 100% 一致（明确标注简化点）。
   Parallelization: Wave 0 | Blocked by: 1 | Blocks: 13, 18, 30
   References: 《任务书》§4.1–§4.8、§5、§六、§七；《接口》§1/§2。
@@ -361,7 +361,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=回放得分与原始一致；failure=截断/损坏日志被检测并报错而非崩溃。Evidence `.omo/evidence/task-4-future-war-bot.log`
   Commit: Y | feat(logging): add round logger and deterministic replay
 
-- [ ] 5. 结构化日志与事件码体系
+- [x] 5. 结构化日志与事件码体系
   What to do / Must NOT do: 实现分层日志（`DIGEST`/`EVENT`/`DECISION`/`TRACE`）+ 固定标签 + **稳定事件码** + 单行键值格式 `<round> <phase> <TAG> <CODE> <msg> <k=v>`；级别可配。**不要**用自由文本导致无法 grep；不要把日志写热路径拖慢响应。
   Parallelization: Wave 0 | Blocked by: 4 | Blocks: 全部（横切）
   References: 本方案 §4.1；《接口》§1.1（errors/lastRoundRoleActionResults/lastCmdResult）。

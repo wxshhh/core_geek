@@ -45,6 +45,22 @@ def resolve_log_dir(log_dir: str | Path | None = None) -> Path:
     return Path(log_dir)
 
 
+def new_log_path(log_dir: Path, match_name: str | None, suffix: str) -> Path:
+    """在 log_dir 下生成唯一文件名 `<match_name>_<utc>_<pid>.<suffix>`（冲突加序号）。
+
+    命名约定由 RoundLogger（.jsonl，工作包 4）与 StructuredLogger（.log，工作包 5）
+    共享：同一对局两者共用 match_name 前缀，仅后缀区分用途。
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    stem = f"{match_name or 'match'}_{stamp}_{os.getpid()}"
+    candidate = log_dir / f"{stem}.{suffix}"
+    index = 2
+    while candidate.exists():
+        candidate = log_dir / f"{stem}_{index}.{suffix}"
+        index += 1
+    return candidate
+
+
 class RoundLogger:
     """每回合 JSONL 落盘器：线程安全、缓冲写可配、写失败降级绝不抛异常。
 
@@ -70,7 +86,7 @@ class RoundLogger:
         self._path: Path | None = None
         try:
             self._log_dir.mkdir(parents=True, exist_ok=True)
-            self._path = self._new_log_path(match_name)
+            self._path = new_log_path(self._log_dir, match_name, "jsonl")
             self._file = self._path.open("a", encoding="utf-8")
             self._healthy = True
         except OSError as exc:
@@ -136,16 +152,6 @@ class RoundLogger:
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
-
-    def _new_log_path(self, match_name: str | None) -> Path:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-        stem = f"{match_name or 'match'}_{stamp}_{os.getpid()}"
-        candidate = self._log_dir / f"{stem}.jsonl"
-        suffix = 2
-        while candidate.exists():
-            candidate = self._log_dir / f"{stem}_{suffix}.jsonl"
-            suffix += 1
-        return candidate
 
     def _mark_broken(self, message: str) -> None:
         self._healthy = False
