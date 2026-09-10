@@ -571,7 +571,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=狙杀成功；failure=目标脱离视野时放弃并回归防守。Evidence `.omo/evidence/task-29-future-war-bot.replay`
   Commit: Y | feat(offense): add enemy role sniping
 
-- [ ] 30. 端到端调优与回归
+- [x] 30. 端到端调优与回归
   What to do / Must NOT do: 用自对弈框架做策略终调（武器配比/建造顺序/推家阈值/任务优先级），跑全量回归；输出最终策略参数与报告。**不要**为单一场景过拟合。
   Parallelization: Wave 5 | Blocked by: 全部 | Blocks: 交付
   References: 工作包 18 框架；《任务书》§六/§七。
