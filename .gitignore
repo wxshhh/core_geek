@@ -12,6 +12,13 @@ logs/
 # 证据目录（本地工作记录，不提交）
 .omo/evidence/
 
+# 会话/续跑状态（本地）
+.omo/run-continuation/
+
+# 构建/工具产物
+*.egg-info/
+uv.lock
+
 # 虚拟环境
 .venv/
 venv/
