@@ -24,6 +24,8 @@ from future_war.strategy.builder import preferred_weapon_cells
 
 WEAPON_COST: Final = 25
 SELL_THRESHOLD: Final = 5
+DUSK_RETURN: Final = 40
+_DAY_LENGTH: Final = 130
 _WEAPON_ORDER: Final = ("rocket", "railgun", "gatling")
 _DEFAULT_PLAN: Final = ("rocket", "railgun", "railgun")
 _MINE_KINDS: Final = frozenset({"stone", "iron", "copper"})
@@ -45,6 +47,8 @@ def plan_economy(
     """为所有工人产出本回合经济指令（采矿/贩卖/建造 + 移动）。"""
     state = state if state is not None else EconomyState()
     _digest_feedback(view, state)
+    if _dusk(view):
+        return _return_home(view)
     max_weapons = _int_config(config, "build.day1_max_weapons", 3)
     plan = _weapon_plan(config)
     commands: dict[int, RoleCommand] = {}
@@ -70,6 +74,23 @@ def _digest_feedback(view: WorldView, state: EconomyState) -> None:
         if view.action_ok(uid) is False:
             state.failed_build_cells.add(cell)
         state.pending_build.pop(uid, None)
+
+
+def _dusk(view: WorldView) -> bool:
+    """白天后段（第 40 回合起）：工人撤回基地备战夜晚（保证有操控者）。"""
+    return view.is_day() and (view.round_no - 1) % _DAY_LENGTH >= DUSK_RETURN
+
+
+def _return_home(view: WorldView) -> dict[int, RoleCommand]:
+    base = view.base_pos()
+    if base is None:
+        return {}
+    commands: dict[int, RoleCommand] = {}
+    goals = {worker.id: base for worker in view.own_workers()}
+    for uid, step in resolve_moves(view, goals).items():
+        if step is not None:
+            commands[uid] = RoleCommand(action=Action.MOVE, targetPos=(step,))
+    return commands
 
 
 def _plan_worker(
