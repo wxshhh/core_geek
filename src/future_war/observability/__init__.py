@@ -37,6 +37,7 @@ from future_war.observability.replay import (
     resolve_log_dir,
     verify_replay,
 )
+from future_war.observability.round_metrics import RoundObserver, metric_fields
 from future_war.observability.structured_log import (
     Phase,
     StructuredLogger,
@@ -76,6 +77,7 @@ __all__ = [
     "Phase",
     "ReplayOutcome",
     "RoundLogger",
+    "RoundObserver",
     "RoundRecord",
     "StructuredLogger",
     "Tag",
@@ -85,6 +87,7 @@ __all__ = [
     "format_line",
     "get_logger",
     "load_rounds",
+    "metric_fields",
     "phase_of",
     "render_summary",
     "replay_match",

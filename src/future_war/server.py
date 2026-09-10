@@ -21,6 +21,9 @@ from socketserver import TCPServer
 from typing import Final, TypedDict
 
 from future_war.config import load_config, parse_profile_arg
+from future_war.models import remove_trailing_commas
+from future_war.observability.events import EventCode
+from future_war.observability.round_metrics import RoundObserver
 
 HOST: Final = "0.0.0.0"
 DEFAULT_PORT: Final = 8080
@@ -58,6 +61,8 @@ class JudgeHTTPServer(ThreadingHTTPServer):
     连接预算（10s）。这里直接使用绑定地址，不做任何域名解析。
     """
 
+    observer: RoundObserver | None = None
+
     def server_bind(self) -> None:
         """完成 bind 并登记 server_name/port，跳过 getfqdn。"""
         TCPServer.server_bind(self)
@@ -72,9 +77,9 @@ class JudgeRequestHandler(BaseHTTPRequestHandler):
     timeout = SOCKET_TIMEOUT_SECONDS
 
     def do_POST(self) -> None:
-        """POST 任意路径：解析请求体（容忍畸形 JSON），返回默认 Response。"""
-        body = self._read_body()
-        self._warn_if_malformed(body)
+        """POST 任意路径：解析请求体（容忍畸形 JSON），落盘回合并返回 Response。"""
+        request = self._parse_request(self._read_body())
+        self._observe(request)
         self._send_response(EMPTY_RESPONSE)
 
     def handle_timeout(self) -> None:
@@ -96,18 +101,41 @@ class JudgeRequestHandler(BaseHTTPRequestHandler):
             length = 0
         return self.rfile.read(length) if length > 0 else b""
 
-    def _warn_if_malformed(self, body: bytes) -> None:
-        """畸形 JSON 不计入异常：只向 stderr 告警，响应仍是合法 Response。"""
+    def _parse_request(self, body: bytes) -> dict[str, object] | None:
+        """解析请求体为 dict；畸形输入返回 None 并记一条 X-02 异常行。"""
         if not body:
-            return
+            return None
         try:
-            json.loads(body.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            print(
-                f"[future-war] WARN malformed request body ignored: {exc}",
-                file=sys.stderr,
-                flush=True,
-            )
+            text = body.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            self._emit(EventCode.X_02, f"undecodable request body: {exc}")
+            return None
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            try:
+                data = json.loads(remove_trailing_commas(text))
+            except json.JSONDecodeError as exc:
+                self._emit(EventCode.X_02, f"malformed request body: {exc}")
+                return None
+        return data if isinstance(data, dict) else None
+
+    def _observe(self, request: dict[str, object] | None) -> None:
+        """写入本回合日志与指标；畸形请求已由 _parse_request 记异常行。"""
+        observer = getattr(self.server, "observer", None)
+        if observer is None or request is None:
+            return
+        round_no = request.get("roundNo")
+        if not isinstance(round_no, int) or isinstance(round_no, bool):
+            round_no = 0
+        observer.observe(round_no, request, EMPTY_RESPONSE)
+
+    def _emit(self, code: EventCode, message: str) -> None:
+        """畸形请求不计入队伍异常（§八）：记结构化行并向 stderr 告警。"""
+        observer = getattr(self.server, "observer", None)
+        if observer is not None:
+            observer.emit(code, message)
+        print(f"[future-war] WARN {message}", file=sys.stderr, flush=True)
 
     def _send_response(self, payload: JudgeResponse) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -123,10 +151,11 @@ def resolve_port(port_arg: str | None) -> int:
     return DEFAULT_PORT if port_arg is None else int(port_arg)
 
 
-def create_server(port: int) -> JudgeHTTPServer:
+def create_server(port: int, observer: RoundObserver | None = None) -> JudgeHTTPServer:
     """构建监听 HOST:port 的多线程 HTTP 服务（工作线程随主进程退出）。"""
     server = JudgeHTTPServer((HOST, port), JudgeRequestHandler)
     server.daemon_threads = True
+    server.observer = observer
     return server
 
 
@@ -135,6 +164,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:]) if argv is None else list(argv)
     profile, positional = parse_profile_arg(args)
     config = load_config(profile=profile)
+    observer = RoundObserver.from_config(config)
+    observer.emit(EventCode.I_01, "startup", stamp=config.stamp(), profile=config.profile)
     print(f"[future-war] stamp {config.stamp()}", file=sys.stderr, flush=True)
     port_arg = positional[0] if positional else None
     try:
@@ -148,7 +179,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not 0 <= port <= 65535:
         print(f"[future-war] ERROR port {port} out of range 0-65535", file=sys.stderr)
         return 2
-    server = create_server(port)
+    server = create_server(port, observer)
     print(
         f"[future-war] listening on {HOST}:{port} (pid={os.getpid()})",
         file=sys.stderr,
@@ -160,6 +191,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("[future-war] received Ctrl+C, shutting down", file=sys.stderr, flush=True)
     finally:
         server.server_close()
+        observer.close()
     return 0
 
 

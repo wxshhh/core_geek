@@ -41,6 +41,7 @@ class Tag(str, Enum):
     ERROR = "ERROR"
     ANOMALY = "ANOMALY"
     DIGEST = "DIGEST"
+    METRIC = "METRIC"  # 机器可读指标行（方案 §4.2，工作包 6）
 
     def bracket(self) -> str:
         """日志行内带方括号的形态，如 `[ECON]`。"""
@@ -160,6 +161,8 @@ class EventCode(str, Enum):
 
     D_01 = "D-01"
 
+    M_01 = "M-01"
+
     X_01 = "X-01"
     X_02 = "X-02"
     X_03 = "X-03"
@@ -225,6 +228,10 @@ _SPECS: Final[dict[str, EventSpec]] = {
     EventCode.O_03.value: EventSpec(Tag.OPP, LogLevel.EVENT, "threat detected: possible base rush"),
     # D — 摘要
     EventCode.D_01.value: EventSpec(Tag.DIGEST, LogLevel.DIGEST, "day/match digest line"),
+    # M — 机器可读指标（方案 §4.2：每回合一行，供内部 LLM 直接归纳）
+    EventCode.M_01.value: EventSpec(
+        Tag.METRIC, LogLevel.DIGEST, "per-round machine-readable metric line"
+    ),
     # X — 错误与异常（恒输出，任务书 §八）
     EventCode.X_01.value: EventSpec(Tag.ERROR, LogLevel.EVENT, "internal error caught (process kept alive)"),
     EventCode.X_02.value: EventSpec(Tag.ERROR, LogLevel.EVENT, "malformed judge request"),
