@@ -411,7 +411,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=路径可达且无碰撞；failure=目标被围死时返回「原地等待」而非非法移动。Evidence `.omo/evidence/task-10-future-war-bot.txt`
   Commit: Y | feat(nav): add pathfinding and collision avoidance
 
-- [ ] 11. 基础经济（采集/贩卖/建造）
+- [x] 11. 基础经济（采集/贩卖/建造）
   What to do / Must NOT do: 工人就近采矿（石头/铁/铜）、在小贩旁批量贩卖、在蓝色区建造武器（`build` 扣金）、在黄色区建墙（耗石头）。**不要**让工人闲置或反复无效移动。
   Parallelization: Wave 1 | Blocked by: 9, 10 | Blocks: 15
   References: 《任务书》§4.4、§4.5.1、§4.6.1；《接口》§2.3。
