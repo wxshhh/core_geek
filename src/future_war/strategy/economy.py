@@ -23,6 +23,8 @@ from future_war.core.world_view import WorldView
 from future_war.strategy.builder import preferred_weapon_cells
 
 WEAPON_COST: Final = 25
+VOUCHER_COST: Final = 100
+VOUCHER: Final = "WeaponUpgradeVoucher1"
 SELL_THRESHOLD: Final = 5
 DUSK_RETURN: Final = 40
 _DAY_LENGTH: Final = 130
@@ -54,7 +56,17 @@ def plan_economy(
     commands: dict[int, RoleCommand] = {}
     goals: dict[int, Pos] = {}
     assignments = _assign_mines(view, view.own_workers())
+    shopper = _designated_shopper(view, max_weapons)
     for worker in view.own_workers():
+        if worker.id == shopper:
+            shopping = _plan_shopping(view, worker, max_weapons)
+            if shopping is not None:
+                cmd, goal = shopping
+                if cmd is not None:
+                    commands[worker.id] = cmd
+                elif goal is not None:
+                    goals[worker.id] = goal
+                continue
         cmd, goal = _plan_worker(
             view, worker, max_weapons, plan, state, assignments.get(worker.id)
         )
@@ -66,6 +78,31 @@ def plan_economy(
         if step is not None:
             commands[uid] = RoleCommand(action=Action.MOVE, targetPos=(step,))
     return commands
+
+
+def _designated_shopper(view: WorldView, max_weapons: int) -> int | None:
+    """武器建满且金币够买升级券时，指派离武器商店最近的工人去采购。"""
+    if len(view.own_weapons()) < max_weapons or view.gold() < VOUCHER_COST:
+        return None
+    shop = view.weapon_shop_pos()
+    workers = view.own_workers()
+    if shop is None or not workers:
+        return None
+    return min(workers, key=lambda w: (chebyshev(w.pos, shop), w.id)).id
+
+
+def _plan_shopping(
+    view: WorldView, worker: Role, max_weapons: int
+) -> tuple[RoleCommand | None, Pos | None] | None:
+    """前往武器商店购买武器升级券（到达后购买，否则朝商店移动）。"""
+    if len(view.own_weapons()) < max_weapons or view.gold() < VOUCHER_COST:
+        return None
+    shop = view.weapon_shop_pos()
+    if shop is None:
+        return None
+    if chebyshev(worker.pos, shop) <= 1:
+        return RoleCommand(action=Action.BUY, name=VOUCHER, num=1), None
+    return None, shop
 
 
 def _digest_feedback(view: WorldView, state: EconomyState) -> None:

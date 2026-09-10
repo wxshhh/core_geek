@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from future_war.config import Config
 from future_war.models import RoleCommand
 from future_war.core.world_view import WorldView
+from future_war.strategy.builder import plan_upgrades
 from future_war.strategy.combat import plan_defense
 from future_war.strategy.economy import EconomyState, plan_economy
 from future_war.strategy.offense import OffenseState, plan_offense
@@ -44,6 +45,8 @@ def plan_turn(
         )
         return TurnPlan(commands=commands)
     commands = plan_economy(view, config, economy_state)
+    for uid, command in plan_upgrades(view, config).items():
+        commands.setdefault(uid, command)  # 经济指令优先，升级券补空
     task = plan_task(view, config, task_state)
     commands.update(task.commands)
     if not task.commands:
