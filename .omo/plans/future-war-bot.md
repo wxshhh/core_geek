@@ -469,7 +469,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=出生点改变后布局自适应；failure=无观测时用保守默认布局。Evidence `.omo/evidence/task-17-future-war-bot.replay`
   Commit: Y | feat(opponent): add opponent modeling and recon adaptation
 
-- [ ] 18. 自对弈调参框架
+- [x] 18. 自对弈调参框架
   What to do / Must NOT do: 用模拟器跑 Bot vs Bot（同/异策略），批量对比变体（武器配比/建造顺序/推家阈值），输出胜率与分数报告。**不要**用单次结果下结论（需多种子统计）。
   Parallelization: Wave 2 | Blocked by: 3, 4, 13 | Blocks: 30
   References: 工作包 3/4 产物；《任务书》§六/§七（评分）。
