@@ -13,9 +13,11 @@ from future_war.strategy.builder import (
 )
 from future_war.strategy.combat import plan_defense
 from future_war.strategy.economy import plan_economy
+from future_war.strategy.opponent import OpponentModel
 from future_war.strategy.planner import plan_turn
 
 __all__ = [
+    "OpponentModel",
     "StrategyBot",
     "plan_defense",
     "plan_economy",

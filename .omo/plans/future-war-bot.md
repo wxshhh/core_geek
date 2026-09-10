@@ -461,7 +461,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=一波机器人全清；failure=目标超出射程/被墙挡（电磁炮/加特林）时改选合法目标。Evidence `.omo/evidence/task-16-future-war-bot.replay`
   Commit: Y | feat(combat): add multi-weapon coordination
 
-- [ ] 17. 对手建模与侦察适配
+- [x] 17. 对手建模与侦察适配
   What to do / Must NOT do: 记录敌方可见单位轨迹与全局可见的基地/围墙变化，推断敌方武器配比/推家意图；从首局观测学习机器人出生位置与路径并据此调整布局。**不要**假设固定的机器人出生点。
   Parallelization: Wave 2 | Blocked by: 13 | Blocks: 27, 28, 29
   References: 《任务书》§4.3（视野/全局可见）、§4.7.3（行为未定义点）。

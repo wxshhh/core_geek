@@ -10,6 +10,7 @@ from future_war.config import Config
 from future_war.models import Request, Response
 from future_war.core.world import WorldModel
 from future_war.strategy.economy import EconomyState
+from future_war.strategy.opponent import OpponentModel
 from future_war.strategy.planner import plan_turn
 
 
@@ -20,9 +21,11 @@ class StrategyBot:
         self._model = WorldModel()
         self._config = config
         self._economy = EconomyState()
+        self._opponent = OpponentModel()
 
     def __call__(self, request: Request) -> Response:
         view = self._model.apply_round(request)
+        self._opponent.observe(view)
         return Response(
             roleCommandMap=plan_turn(view, self._config, self._economy)
         )
