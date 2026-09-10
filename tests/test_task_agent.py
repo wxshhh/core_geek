@@ -127,6 +127,18 @@ def test_disabled_by_config() -> None:
     assert action.commands == {}
 
 
+def test_no_task_accepted_late_in_day() -> None:
+    """Given 白天接近夜晚（剩余不足余量），When 规划，Then 不接任务（避免跨夜超时）。"""
+    action = plan_task(_view(pioneer_pos=(14, 15), round_no=68), _config(), TaskState())
+    assert action.commands == {}
+
+
+def test_task_accepted_early_in_day() -> None:
+    """Given 白天回合充裕，When 规划，Then 接任务。"""
+    action = plan_task(_view(pioneer_pos=(14, 15), round_no=1), _config(), TaskState())
+    assert enum_to_str(action.commands[10011].action) == "acceptTask"
+
+
 def main() -> int:
     """零依赖测试运行器：执行全部 test_* 函数并报告。"""
     test_funcs = [

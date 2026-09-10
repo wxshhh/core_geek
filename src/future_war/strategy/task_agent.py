@@ -22,6 +22,8 @@ from future_war.core.world_view import WorldView
 
 _ANSWER_MARKER: Final = "ANSWER:"
 _EXPLORE_CMD: Final = "echo explore"
+_DAY_ROUNDS: Final = 70
+_DAY_LENGTH: Final = 130
 
 
 @dataclass
@@ -76,7 +78,7 @@ def plan_task(
         _reset(state)
 
     if not phase:
-        return _seek_task(view, unit)
+        return _seek_task(view, unit, config)
 
     if state.signature is None:
         state.signature = _signature(phase)
@@ -97,7 +99,9 @@ def plan_task(
     return TaskAction({})
 
 
-def _seek_task(view: WorldView, unit) -> TaskAction:
+def _seek_task(view: WorldView, unit, config: Config | None) -> TaskAction:
+    if not _enough_time(view, config):
+        return TaskAction({})
     points = view.own_task_points()
     if not points:
         return TaskAction({})
@@ -152,3 +156,16 @@ def _reset(state: TaskState) -> None:
 def _enabled(config: Config | None) -> bool:
     value = config.get("tasks.self_evolution_enabled") if config is not None else None
     return value is not False
+
+
+def _enough_time(view: WorldView, config: Config | None) -> bool:
+    """白天剩余回合是否足以完成一个任务（避免跨夜超时，§4.4 T-03）。"""
+    if not view.is_day():
+        return False
+    remaining = _DAY_ROUNDS - (view.round_no - 1) % _DAY_LENGTH
+    return remaining > _margin(config)
+
+
+def _margin(config: Config | None) -> int:
+    value = config.get("tasks.timeout_margin_rounds") if config is not None else None
+    return value if isinstance(value, int) and not isinstance(value, bool) else 10

@@ -503,7 +503,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=任务完成且通过率高；failure=`[TIMEOUT]`/`[TRUNCATED]`/答案错误时降级重试或提交最优答案。Evidence `.omo/evidence/task-21-future-war-bot.json`
   Commit: Y | feat(tasks): add self-evolution sandbox agent
 
-- [ ] 22. 任务调度
+- [x] 22. 任务调度
   What to do / Must NOT do: 开拓者日程：白天早接自进化任务、避免跨夜超时、有富余做寻宝、夜晚回防。**不要**在天晚时接任务或在任务中离点。
   Parallelization: Wave 3 | Blocked by: 10, 19, 20, 21 | Blocks: 30
   References: 《任务书》§4.2、§五、§5.2；《接口》§1.3.2（`timeoutRounds`）。
