@@ -369,7 +369,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=日志可 grep 且字段稳定；failure=日志写入异常时降级不崩溃。Evidence `.omo/evidence/task-5-future-war-bot.log`
   Commit: Y | feat(observability): add structured logging and event codes
 
-- [ ] 6. 日志完整性与机器可读指标（供内部 LLM 总结）
+- [x] 6. 日志完整性与机器可读指标（供内部 LLM 总结）
   What to do / Must NOT do: 确保每回合关键状态/决策/结果/错误**全部落盘且格式稳定**（便于你方内部 LLM 直接归纳）；每回合额外输出一行机器可读 `[METRIC]`（gold/kills/score/baseHP/rolesAlive/errors 等）。**不要**自建重型人工摘要/异常检测渲染（改由你方内部 LLM 负责）；不要遗漏任何回合。
   Parallelization: Wave 0 | Blocked by: 4, 5 | Blocks: 30
   References: 本方案 §4.2；《任务书》§六（积分分解）、§4.7；《接口》§1.1（errors/lastRoundRoleActionResults/lastCmdResult）。
@@ -385,7 +385,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=参数生效；failure=非法配置时回退默认并告警。Evidence `.omo/evidence/task-7-future-war-bot.log`
   Commit: Y | feat(config): add central config and version stamp
 
-- [ ] 8. 诊断字典与报告协议
+- [x] 8. 诊断字典与报告协议
   What to do / Must NOT do: 编写 `docs/诊断字典.md`（现象→模块→事件码→可调参数）+ `REPORT_TEMPLATE.md`（用户一句话报告模板），覆盖常见症状。**不要**假设用户能外传日志/数据。
   Parallelization: Wave 0 | Blocked by: 5, 7 | Blocks: 交付
   References: 本方案 §4.4；工作包 5/6/7。
