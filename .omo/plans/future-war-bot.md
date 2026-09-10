@@ -403,7 +403,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=多回合状态一致；failure=某回合字段缺失时用上回合/默认值兜底且不崩溃。Evidence `.omo/evidence/task-9-future-war-bot.json`
   Commit: Y | feat(core): add world model and cross-round state
 
-- [ ] 10. 寻路与碰撞规避
+- [x] 10. 寻路与碰撞规避
   What to do / Must NOT do: 网格 BFS/A*，8 方向，切比雪夫距离；障碍=建筑/角色/机器人/中立单位/任务点/矿区（§4.1）；预测并规避目标点受阻/争夺/互换三类碰撞（§4.5.4）。**不要**产生与已知障碍重叠的移动目标。
   Parallelization: Wave 1 | Blocked by: 9 | Blocks: 11, 12, 14–18, 19–22
   References: 《任务书》§4.5.4、§4.1「以下元素均会阻挡角色移动」。
