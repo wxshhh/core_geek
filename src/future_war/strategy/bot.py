@@ -11,6 +11,7 @@ from future_war.models import Request, Response
 from future_war.core.world import WorldModel
 from future_war.strategy.economy import EconomyState
 from future_war.strategy.llm_manager import LLMManager
+from future_war.strategy.offense import OffenseState
 from future_war.strategy.opponent import OpponentModel
 from future_war.strategy.planner import plan_turn
 from future_war.strategy.task_agent import TaskState
@@ -27,6 +28,7 @@ class StrategyBot:
         self._opponent = OpponentModel()
         self._treasure = TreasureState()
         self._task = TaskState()
+        self._offense = OffenseState()
         self._llm = LLMManager.from_config(config)
 
     def __call__(self, request: Request) -> Response:
@@ -34,7 +36,12 @@ class StrategyBot:
         self._opponent.observe(view)
         self._llm.sync(view)
         plan = plan_turn(
-            view, self._config, self._economy, self._treasure, self._task
+            view,
+            self._config,
+            self._economy,
+            self._treasure,
+            self._task,
+            self._offense,
         )
         prompt = plan.prompt
         if prompt and not self._llm.note_sent(prompt, view):

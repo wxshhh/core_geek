@@ -14,6 +14,7 @@ from future_war.strategy.builder import (
 from future_war.strategy.combat import plan_defense
 from future_war.strategy.economy import plan_economy
 from future_war.strategy.llm_manager import LLMManager
+from future_war.strategy.offense import OffenseState, plan_offense
 from future_war.strategy.opponent import OpponentModel
 from future_war.strategy.planner import TurnPlan, plan_turn
 from future_war.strategy.reasoning import (
@@ -40,6 +41,7 @@ __all__ = [
     "CmdResult",
     "LLMManager",
     "NewsEffect",
+    "OffenseState",
     "OpponentModel",
     "SkillLibrary",
     "StrategyBot",
@@ -54,6 +56,7 @@ __all__ = [
     "parse_official_news",
     "plan_defense",
     "plan_economy",
+    "plan_offense",
     "plan_task",
     "plan_treasure",
     "plan_turn",

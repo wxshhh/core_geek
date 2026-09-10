@@ -14,6 +14,7 @@ from future_war.models import RoleCommand
 from future_war.core.world_view import WorldView
 from future_war.strategy.combat import plan_defense
 from future_war.strategy.economy import EconomyState, plan_economy
+from future_war.strategy.offense import OffenseState, plan_offense
 from future_war.strategy.task_agent import TaskState, plan_task
 from future_war.strategy.treasure import TreasureState, plan_treasure
 
@@ -33,10 +34,15 @@ def plan_turn(
     economy_state: EconomyState | None = None,
     treasure_state: TreasureState | None = None,
     task_state: TaskState | None = None,
+    offense_state: OffenseState | None = None,
 ) -> TurnPlan:
     """按昼夜选择行为模块，返回本回合 TurnPlan。"""
     if view.is_night():
-        return TurnPlan(commands=plan_defense(view, config))
+        commands = plan_defense(view, config)
+        commands.update(
+            plan_offense(view, config, frozenset(commands), offense_state)
+        )
+        return TurnPlan(commands=commands)
     commands = plan_economy(view, config, economy_state)
     task = plan_task(view, config, task_state)
     commands.update(task.commands)

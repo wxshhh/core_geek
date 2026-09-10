@@ -547,7 +547,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
 
 ### Wave 5 — 进攻与调优
 
-- [ ] 27. 火箭全图狙击敌方基地
+- [x] 27. 火箭全图狙击敌方基地
   What to do / Must NOT do: 火箭 L3 就绪且无机器人威胁时按冷却轰击敌方基地（`attack` 目标为敌基地全局可见坐标，不需视野、导弹不被阻挡）；落后积分时升级为持续推家。**不要**在防守吃紧时抽走火箭火力。
   Parallelization: Wave 5 | Blocked by: 16, 17, 23 | Blocks: 30
   References: 《任务书》§4.5.1（L3 全图）、§4.5.4（导弹不被阻挡）、§4.3（敌基地全局可见）、§七。
@@ -555,7 +555,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=命中并压低敌基地血；failure=防守告警时自动切回清波。Evidence `.omo/evidence/task-27-future-war-bot.replay`
   Commit: Y | feat(offense): add rocket base sniping
 
-- [ ] 28. 机器人召唤令骚扰
+- [x] 28. 机器人召唤令骚扰
   What to do / Must NOT do: 余钱按每天≤10 张购买召唤令灌对方下夜；优先高性价比（大/BOSS）在关键夜晚。**不要**挤占防守升级必需的金币。
   Parallelization: Wave 5 | Blocked by: 15, 17 | Blocks: 30
   References: 《任务书》§4.6.3（召唤令/每天上限）、§4.7.3。
@@ -563,7 +563,7 @@ Bot 为**单进程长期驻留服务**（`bash run.sh port` 启动一次），�
   QA scenarios: happy=召唤生效；failure=金币不足/超上限时跳过且不报错。Evidence `.omo/evidence/task-28-future-war-bot.replay`
   Commit: Y | feat(offense): add robot summon harassment
 
-- [ ] 29. 敌方角色狙击
+- [x] 29. 敌方角色狙击
   What to do / Must NOT do: 当敌方开拓者/工人进入视野（4）时，用火箭/电磁炮优先狙杀以阻断其任务/经济；优先级低于基地与防守。**不要**为狙角色浪费关键冷却而漏防。
   Parallelization: Wave 5 | Blocked by: 16, 17 | Blocks: 30
   References: 《任务书》§4.3、§4.5.2（阵亡复活 20 回合）、§4.5.4。
