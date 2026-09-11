@@ -74,12 +74,16 @@ python3 scripts/run_sim.py --seed 42 --challenger http:http://127.0.0.1:18080 --
 
 ## 打包提交
 
-版本统一由仓库根 `VERSION` 文件管理（单一真源）：
+版本统一由仓库根 `VERSION` 文件管理（单一真源）。打包脚本是**跨平台**的
+Python 脚本（仅标准库，Windows/macOS/Linux 通用）：
 
 ```bash
-bash scripts/package.sh            # 生成 dist/future-war-bot-<version>.tar.gz
-bash scripts/package.sh 0.2.0      # 临时覆盖版本
+python scripts/package.py            # 生成 dist/future-war-bot-<version>.tar.gz
+python scripts/package.py 0.2.0      # 临时覆盖版本
 ```
+
+- **Windows**：`python scripts\package.py`
+- **macOS / Linux**：`python scripts/package.py`（或便捷入口 `bash scripts/package.sh`）
 
 产物：`dist/future-war-bot-<version>.tar.gz` + `.sha256` 校验文件；包内含
 `BUILD_INFO.txt`（version/commit/built），并自动排除 `.git/`、`__pycache__/`、

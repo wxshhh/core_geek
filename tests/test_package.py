@@ -32,7 +32,7 @@ def test_package_script_builds_archive_with_expected_contents() -> None:
         archive.unlink()
     try:
         result = subprocess.run(
-            ["bash", "scripts/package.sh", version],
+            [sys.executable, "scripts/package.py", version],
             cwd=ROOT,
             capture_output=True,
             text=True,
