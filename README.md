@@ -13,11 +13,19 @@
 ## 运行
 
 ```bash
-bash run.sh 18080                  # 监听 0.0.0.0:18080；缺省 8080
+bash run.sh 18080                  # Linux/macOS（判题器样例：bash run.sh port）
 bash run.sh 18080 --profile aggressive   # 可选 profile（见 config/）
 ```
 
+Windows 或任意平台也可直接：
+
+```bat
+python run.py 18080                :: 跨平台入口，不依赖 PYTHONPATH
+run.bat 18080                      :: Windows 便捷入口
+```
+
 启动打印版本戳：`[future-war] stamp <commit> / <config-hash> / <profile>`。
+三个入口都监听 `0.0.0.0:<port>`，port 缺省 8080。
 
 ## 手动冒烟
 

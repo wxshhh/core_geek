@@ -5,9 +5,9 @@
 
     {"roleCommandMap": {...}, "prompt": "...", "executeCmd": "..."}
 
-当前为脚手架阶段：任意请求均返回空 roleCommandMap 的合法 Response。
-策略与游戏逻辑在后续工作包接入 do_POST 的处理链。
-约束（docs/任务书.md §八）：连接 10s / 响应 5s 超时；进程崩溃即判负。
+do_POST 经 StrategyBot 规划后返回 roleCommandMap；任何解析/规划失败都降级为空指令
+的合法 Response，进程绝不崩溃（任务书 §八）。约束：连接 10s / 响应 5s 超时；
+进程崩溃即判负。
 """
 
 from __future__ import annotations

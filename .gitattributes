@@ -1,0 +1,8 @@
+# 统一行尾，避免 Windows 检出把 run.sh 变成 CRLF 导致 `bash run.sh` 报 \r 错误。
+* text=auto
+*.sh text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.bat text eol=crlf
+*.txt text eol=lf
