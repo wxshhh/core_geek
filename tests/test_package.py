@@ -43,19 +43,20 @@ def test_package_script_builds_archive_with_expected_contents() -> None:
         with tarfile.open(archive) as tar:
             names = tar.getnames()
         for expected in (
-            "run.sh",
-            "run.py",
-            "run.bat",
-            "VERSION",
-            "BUILD_INFO.txt",
-            "src/future_war/server.py",
-            "tests/test_server.py",
-            "config/default.json",
+            f"{name}/main3.py",
+            f"{name}/run.sh",
+            f"{name}/run.py",
+            f"{name}/run.bat",
+            f"{name}/VERSION",
+            f"{name}/BUILD_INFO.txt",
+            f"{name}/src/future_war/server.py",
+            f"{name}/tests/test_server.py",
+            f"{name}/config/default.json",
         ):
             assert expected in names, f"missing {expected}"
         assert not any("__pycache__" in n or n.endswith(".pyc") for n in names)
-        assert not any(n.startswith(".git/") for n in names)
-        assert not any("/logs/" in n or n.startswith("logs/") for n in names)
+        assert not any(n.startswith(f"{name}/.git/") for n in names)
+        assert not any("/logs/" in n or n.endswith("/logs") for n in names)
     finally:
         archive.unlink(missing_ok=True)
         checksum.unlink(missing_ok=True)

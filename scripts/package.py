@@ -94,9 +94,15 @@ def _iter_files():
                 yield rel
 
 
-def build_archive(version: str) -> Path:
-    """生成 tar.gz 并返回路径。"""
+def build_archive(version: str, prefix: str | None = None) -> Path:
+    """生成 tar.gz 并返回路径。
+
+    ``prefix``：归档内的顶层目录名。默认 ``future-war-bot-<version>``（把整个项目
+    目录打包）；传空字符串则平铺到归档根目录（``--flat``）。
+    """
     name = f"future-war-bot-{version}"
+    if prefix is None:
+        prefix = name
     dist = ROOT / "dist"
     dist.mkdir(exist_ok=True)
     archive = dist / f"{name}.tar.gz"
@@ -106,10 +112,14 @@ def build_archive(version: str) -> Path:
         f"commit:  {git_commit()}\n"
         f"built:   {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}\n"
     ).encode("utf-8")
+
+    def arc(rel: str) -> str:
+        return f"{prefix}/{rel}" if prefix else rel
+
     with tarfile.open(archive, "w:gz") as tar:
         for rel in _iter_files():
-            tar.add(ROOT / rel, arcname=rel.as_posix())
-        info = tarfile.TarInfo("BUILD_INFO.txt")
+            tar.add(ROOT / rel, arcname=arc(rel.as_posix()))
+        info = tarfile.TarInfo(arc("BUILD_INFO.txt"))
         info.size = len(build_info)
         info.mtime = int(datetime.now(timezone.utc).timestamp())
         tar.addfile(info, io.BytesIO(build_info))
@@ -120,10 +130,33 @@ def build_archive(version: str) -> Path:
     return archive
 
 
+def _parse_args(args: list[str]) -> tuple[str, str | None]:
+    """解析命令行：位置参数为版本，``--flat`` 平铺，``--prefix <name>`` 指定顶层目录。"""
+    prefix: str | None = None
+    positional: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--flat":
+            prefix = ""
+            index += 1
+        elif arg == "--prefix" and index + 1 < len(args):
+            prefix = args[index + 1]
+            index += 2
+        elif arg.startswith("--prefix="):
+            prefix = arg.split("=", 1)[1]
+            index += 1
+        else:
+            positional.append(arg)
+            index += 1
+    version = positional[0] if positional else read_version()
+    return version, prefix
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:]) if argv is None else list(argv)
-    version = args[0] if args else read_version()
-    archive = build_archive(version)
+    version, prefix = _parse_args(args)
+    archive = build_archive(version, prefix)
     size_kb = archive.stat().st_size / 1024
     print("打包完成：")
     print(f"  版本：  {version} (源：{VERSION_FILE.name})")

@@ -65,9 +65,32 @@ def test_run_py_entrypoint_starts_and_responds() -> None:
 
 
 def test_entrypoint_files_exist() -> None:
-    """Given 交付规范，When 检查入口文件，Then run.sh / run.py / run.bat 均存在。"""
-    for name in ("run.sh", "run.py", "run.bat", "scripts/selfcheck.py"):
+    """Given 交付规范，When 检查入口文件，Then main3.py / run.sh / run.py / run.bat 均存在。"""
+    for name in ("main3.py", "run.sh", "run.py", "run.bat", "scripts/selfcheck.py"):
         assert (ROOT / name).is_file(), f"missing {name}"
+
+
+def test_main3_entrypoint_starts_and_responds() -> None:
+    """Given main3.py 入口（平台约定），When 传入 port 启动，Then 返回非空合法指令。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        port = 18098
+        env = {**os.environ, "FUTURE_WAR_LOG_DIR": tmp}
+        proc = subprocess.Popen(
+            [sys.executable, "main3.py", str(port)],
+            cwd=ROOT,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            status, body = _wait_and_post(
+                port, (ROOT / "docs" / "request.txt").read_bytes(), proc
+            )
+            assert status == 200
+            assert json.loads(body)["roleCommandMap"]
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
 
 
 def test_selfcheck_passes() -> None:

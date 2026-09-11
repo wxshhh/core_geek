@@ -12,20 +12,22 @@
 
 ## 运行
 
+**平台入口（项目根目录）**：
+
+```bash
+python3 main3.py 18080             # 平台约定：main3.py 读取第一个参数作为 port
+```
+
+其他等价入口：
+
 ```bash
 bash run.sh 18080                  # Linux/macOS（判题器样例：bash run.sh port）
-bash run.sh 18080 --profile aggressive   # 可选 profile（见 config/）
+python run.py 18080                # 跨平台（不依赖 PYTHONPATH）
+run.bat 18080                      # Windows
 ```
 
-Windows 或任意平台也可直接：
-
-```bat
-python run.py 18080                :: 跨平台入口，不依赖 PYTHONPATH
-run.bat 18080                      :: Windows 便捷入口
-```
-
-启动打印版本戳：`[future-war] stamp <commit> / <config-hash> / <profile>`。
-三个入口都监听 `0.0.0.0:<port>`，port 缺省 8080。
+所有入口都监听 `0.0.0.0:<port>`，port 缺省 8080；启动打印版本戳
+`[future-war] stamp <commit> / <config-hash> / <profile>`。
 
 **平台跑不起来时先自检**（会打印 Python 版本、导入、启动、请求响应的逐项结果）：
 
@@ -94,8 +96,10 @@ python3 scripts/run_sim.py --seed 42 --challenger http:http://127.0.0.1:18080 --
 Python 脚本（仅标准库，Windows/macOS/Linux 通用）：
 
 ```bash
-python scripts/package.py            # 生成 dist/future-war-bot-<version>.tar.gz
+python scripts/package.py            # 默认：把整个项目目录打包（future-war-bot-<version>/…）
+python scripts/package.py --flat     # 平铺到归档根目录
 python scripts/package.py 0.2.0      # 临时覆盖版本
+python scripts/package.py --prefix mydir   # 自定义顶层目录名
 ```
 
 - **Windows**：`python scripts\package.py`
