@@ -72,6 +72,19 @@ python3 scripts/self_play.py --seeds 8 --opponent scripted
 python3 scripts/run_sim.py --seed 42 --challenger http:http://127.0.0.1:18080 --defender idle
 ```
 
+## 打包提交
+
+版本统一由仓库根 `VERSION` 文件管理（单一真源）：
+
+```bash
+bash scripts/package.sh            # 生成 dist/future-war-bot-<version>.tar.gz
+bash scripts/package.sh 0.2.0      # 临时覆盖版本
+```
+
+产物：`dist/future-war-bot-<version>.tar.gz` + `.sha256` 校验文件；包内含
+`BUILD_INFO.txt`（version/commit/built），并自动排除 `.git/`、`__pycache__/`、
+`logs/`、`.venv/`、`.omo/evidence/` 等开发产物。
+
 ## 目录
 
 - `src/future_war/` — Bot 源码（`server` / `models` / `core` / `strategy` / `observability` / `sim`）
