@@ -27,6 +27,14 @@ run.bat 18080                      :: Windows 便捷入口
 启动打印版本戳：`[future-war] stamp <commit> / <config-hash> / <profile>`。
 三个入口都监听 `0.0.0.0:<port>`，port 缺省 8080。
 
+**平台跑不起来时先自检**（会打印 Python 版本、导入、启动、请求响应的逐项结果）：
+
+```bash
+python3 scripts/selfcheck.py
+```
+
+启动/导入失败也会写入 `logs/run.log`（平台不显示 stdout/stderr 时可用）。
+
 ## 手动冒烟
 
 ```bash

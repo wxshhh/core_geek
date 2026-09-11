@@ -66,8 +66,21 @@ def test_run_py_entrypoint_starts_and_responds() -> None:
 
 def test_entrypoint_files_exist() -> None:
     """Given 交付规范，When 检查入口文件，Then run.sh / run.py / run.bat 均存在。"""
-    for name in ("run.sh", "run.py", "run.bat"):
+    for name in ("run.sh", "run.py", "run.bat", "scripts/selfcheck.py"):
         assert (ROOT / name).is_file(), f"missing {name}"
+
+
+def test_selfcheck_passes() -> None:
+    """Given 自检脚本，When 在干净环境运行，Then 退出码 0 且输出 SELFCHECK OK。"""
+    result = subprocess.run(
+        [sys.executable, "scripts/selfcheck.py"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "SELFCHECK OK" in result.stdout
 
 
 def main() -> int:

@@ -9,6 +9,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
+# 启动诊断写入 logs/run.log（平台可能不显示 stdout/stderr）
+LOG_DIR="$ROOT_DIR/logs"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+log_line() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$LOG_DIR/run.log" 2>/dev/null || true; }
+log_line "run.sh start args=$*"
+
 find_python() {
     local candidate
     for candidate in \
@@ -32,8 +38,10 @@ find_python() {
 }
 
 if ! PYTHON="$(find_python)"; then
+    log_line "ERROR: 未找到 Python（需 Python 3.10+）"
     echo "[future-war] ERROR: 未找到 Python（需 Python 3.10+）" >&2
     exit 1
 fi
 
+log_line "python=$PYTHON"
 exec "$PYTHON" "$ROOT_DIR/run.py" "$@"

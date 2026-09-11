@@ -108,8 +108,8 @@ def build_archive(version: str) -> Path:
     ).encode("utf-8")
     with tarfile.open(archive, "w:gz") as tar:
         for rel in _iter_files():
-            tar.add(ROOT / rel, arcname=f"{name}/{rel.as_posix()}")
-        info = tarfile.TarInfo(f"{name}/BUILD_INFO.txt")
+            tar.add(ROOT / rel, arcname=rel.as_posix())
+        info = tarfile.TarInfo("BUILD_INFO.txt")
         info.size = len(build_info)
         info.mtime = int(datetime.now(timezone.utc).timestamp())
         tar.addfile(info, io.BytesIO(build_info))
