@@ -96,10 +96,9 @@ python3 scripts/run_sim.py --seed 42 --challenger http:http://127.0.0.1:18080 --
 Python 脚本（仅标准库，Windows/macOS/Linux 通用）：
 
 ```bash
-python scripts/package.py            # 默认：把整个项目目录打包（future-war-bot-<version>/…）
-python scripts/package.py --flat     # 平铺到归档根目录
+python scripts/package.py            # 默认平铺：main3.py 等直接位于归档根
 python scripts/package.py 0.2.0      # 临时覆盖版本
-python scripts/package.py --prefix mydir   # 自定义顶层目录名
+python scripts/package.py --prefix mydir   # 套一层目录（若平台需要）
 ```
 
 - **Windows**：`python scripts\package.py`

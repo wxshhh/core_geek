@@ -97,12 +97,13 @@ def _iter_files():
 def build_archive(version: str, prefix: str | None = None) -> Path:
     """生成 tar.gz 并返回路径。
 
-    ``prefix``：归档内的顶层目录名。默认 ``future-war-bot-<version>``（把整个项目
-    目录打包）；传空字符串则平铺到归档根目录（``--flat``）。
+    ``prefix``：归档内的顶层目录名。**默认空（平铺）**——整个项目文件（含
+    ``main3.py``）都在归档根目录，平台解压后能直接找到 ``main3.py``。
+    传非空名则套一层目录（``--prefix <name>``）。
     """
     name = f"future-war-bot-{version}"
     if prefix is None:
-        prefix = name
+        prefix = ""
     dist = ROOT / "dist"
     dist.mkdir(exist_ok=True)
     archive = dist / f"{name}.tar.gz"
