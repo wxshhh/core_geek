@@ -74,6 +74,21 @@
 | `log.level` | string | `"EVENT"` | 结构化日志级别：`DIGEST` / `EVENT` / `DECISION` / `TRACE` |
 | `log.trace_enabled` | bool | `false` | TRACE 明细行开关 |
 
+### server — HTTP 服务与超时留证（任务书 §八；事件码 `X-04`）
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `server.slow_round_ms` | int | `3000` | 回合耗时阈值（毫秒）：达到即记一条 `[ERROR] X-04`（带 roundNo 与实测 ms）。判题器响应预算是 5s，默认取 60%；设 `0` 或负数关闭该告警 |
+
+判题器 5s 内收不到响应就判超时，**等真的超时就没有证据了**——本阈值的作用是在
+逼近预算时先留下可 grep 的痕迹（`grep 'X-04' logs/*.log`）。它只影响日志，
+不影响任何策略行为。调高（如 `4500`）→ 只在真正危险时告警；调低（如 `1000`）
+→ 排查性能回归时更敏感。
+
+`X-04` 有两个来源，本键**只管第一个**：① 回合耗时达阈值（带 roundNo）；
+② 读请求/请求体超时（socket 层，无 roundNo，由 `server.py` 的连接收尾逻辑记，
+并补回一个合法空 Response）。
+
 ### build — 建造（方案 §3.1/§3.2）
 
 | 键 | 类型 | 默认 | 说明 |
@@ -84,6 +99,9 @@
 | `build.upgrade_order` | list | `["rocket_l3","railgun_l3","base_l2","base_l3","wall_l2"]` | 升级券使用优先级 |
 | `build.chokepoint_count` | int | `2` | 期望 chokepoint 入口数 |
 | `build.wall_labyrinth_depth` | int | `3` | 围墙浅迷宫深度（拖延而非整圈，方案 §3.2） |
+| `build.wall_max` | int | `12` | 本局围墙目标数上限（只建基地最内圈，避免围死自己） |
+| `build.wall_enabled` | bool | `true` | 围墙总开关；关闭即退回「纯武器防线」基线 |
+| `build.wall_probe_budget` | int | `6` | 每天允许的「探路」建造次数：可建造区是推断的，先用有限次试错探明真区域 |
 
 ### combat — 战斗（方案 §3.3/§4.4）
 
@@ -103,6 +121,16 @@
 | `economy.emergency_reserve` | int | `100` | 应急金币保留（范围炸弹/眩晕法宝应对 BOSS 夜） |
 | `economy.budget_ratios` | object | `{weapon_upgrade:0.5, base_upgrade:0.3, wall_upgrade:0.2}` | 金币预算分配比（和为 1） |
 | `economy.vendor_peak_window` | int | `5` | 价格峰值判定窗口（回合数） |
+| `economy.dusk_return` | int | `40` | 白天第几回合起停止施工、转入**黄昏就位**（把角色送到武器操控位） |
+
+### consumables — 消耗品（任务书 §4.6.3）
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `consumables.medicine_hp_ratio` | float | `0.5` | 低于该血量比例就喝生命药剂（10 金回满） |
+| `consumables.wall_hp_ratio` | float | `0.4` | 围墙低于该血量比例就用修复包（10 金回满） |
+| `consumables.bomb_min_robots` | int | `2` | 3×3 内至少几只机器人才值得投范围炸弹（100 金 / 100 伤害） |
+| `consumables.dizzy_min_robots` | int | `3` | 3×3 内至少几只机器人才值得用眩晕法宝（100 金 / 眩晕 5 回合） |
 
 ### defense — 防御（方案 §3.2）
 
@@ -118,9 +146,12 @@
 | --- | --- | --- | --- |
 | `offense.enabled` | bool | `false` | 进攻总开关（默认防御优先） |
 | `offense.base_snipe_enabled` | bool | `true` | 火箭 L3 空闲冷却时轰敌基地（施压打法） |
-| `offense.summon_harass_enabled` | bool | `false` | 余钱买机器人召唤令骚扰 |
+| `offense.summon_harass_enabled` | bool | `true` | 余钱买机器人召唤令换击杀分（§4.6.3：中型 15 金/分最优） |
+| `offense.summon_reserve` | int | `100` | 召唤保留金：只花超出该值的部分，绝不挤占武器/基地升级 |
 | `offense.summon_daily_cap` | int | `10` | 每天召唤令上限（任务书 §4.6.3） |
-| `offense.role_snipe_enabled` | bool | `false` | 视野内狙敌方角色 |
+| `offense.role_snipe_enabled` | bool | `true` | 视野内狙杀敌方角色（默认只在对方残血时出手） |
+| `offense.role_snipe_hp_ratio` | float | `0.3` | 角色狙击的血量阈值：只补刀「一发能收掉」的目标 |
+| `offense.retreat_hp_ratio` | float | `0.35` | 残血后撤阈值；设 `0` 关闭。阵亡 = 20 回合无武器操控（§4.5.2） |
 | `offense.all_in_score_gap` | int | `300` | 积分落后该值以上时升级为持续推家 |
 
 ### tasks — 任务（方案 §3.6）
@@ -153,6 +184,17 @@
 | --- | --- | --- | --- |
 | `features.replay_enabled` | bool | `true` | 回合落盘/回放（方案 §4.2） |
 | `features.metric_line_enabled` | bool | `true` | 每回合 `[METRIC]` 机器可读指标行（方案 §4.2） |
+
+### world — 可建造区推断（任务书 §4.1 未给坐标表）
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `world.inference.blue_radius` | int | `3` | 蓝色（武器）可建造区推断半径：到基地块切比雪夫距离 1..R |
+| `world.inference.yellow_radius` | int | `6` | 黄色（围墙）可建造区推断半径（与蓝区相减，蓝区优先） |
+
+推断必然不精确：判题器的 `lastRoundRoleActionResults` 反馈会把非法格逐个证伪并
+从候选集中剔除（`world_map.apply_build_feedback`），因此这两个半径只影响
+「第一次尝试」的命中率，不影响正确性。
 
 ## 稳定性约定
 

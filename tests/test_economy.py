@@ -19,6 +19,8 @@ from future_war.config import Config  # noqa: E402
 from future_war.models import Pos, enum_to_str, parse_request  # noqa: E402
 from future_war.core import WorldModel, chebyshev  # noqa: E402
 from future_war.strategy import plan_economy  # noqa: E402
+from future_war.strategy.builder import assign_controllers  # noqa: E402
+from future_war.strategy.economy import EconomyState  # noqa: E402
 
 
 def _pos(x: int, y: int) -> dict[str, int]:
@@ -77,10 +79,10 @@ def _request(
     }
 
 
-def _view(roles, *, zones=None, gold=0):
-    return WorldModel().apply_round(
-        parse_request(_request(roles, zones=zones, gold=gold))
-    )
+def _view(roles, *, zones=None, gold=0, round_no=1):
+    data = _request(roles, zones=zones, gold=gold)
+    data["roundNo"] = round_no
+    return WorldModel().apply_round(parse_request(data))
 
 
 def _mine(x: int, y: int, kind: str = "stone") -> dict[str, Any]:
@@ -122,10 +124,21 @@ def test_worker_sells_when_adjacent_to_vendor_with_ore() -> None:
     assert cmd.num == 5
 
 
-def test_worker_prefers_copper_when_selling() -> None:
-    """Given 背包有铜与石头，When 贩卖，Then 优先卖价值更高的铜。"""
+def test_worker_sells_stone_first_then_copper() -> None:
+    """Given 背包有铜与石头，When 贩卖，Then 先出手石头（它同时是围墙材料）。"""
     worker = _role(
         10010, "worker", 5, 5, 220, backpack=["stone", "stone", "copper", "copper", "copper"]
+    )
+    view = _view([STATION, worker], zones=[_vendor(6, 5)])
+    cmd = plan_economy(view)[10010]
+    assert cmd.name == "stone"
+    assert cmd.num == 2
+
+
+def test_worker_prefers_copper_when_no_stone() -> None:
+    """Given 背包只有铜与铁，When 贩卖，Then 优先卖价值更高的铜。"""
+    worker = _role(
+        10010, "worker", 5, 5, 220, backpack=["iron", "iron", "copper", "copper", "copper"]
     )
     view = _view([STATION, worker], zones=[_vendor(6, 5)])
     cmd = plan_economy(view)[10010]
@@ -190,15 +203,28 @@ def test_two_workers_do_not_target_same_cell() -> None:
     assert len(targets) == len(set(targets))
 
 
+def test_two_workers_have_distinct_orders() -> None:
+    """Given 两工人且武器未建满，When 规划经济，Then 一人专职建造、另一人采卖。"""
+    view = _view(
+        [STATION, _role(10010, "worker", 21, 21, 220), _role(10012, "worker", 5, 6, 220)],
+        zones=[_mine(6, 5)],
+        gold=75,
+    )
+    state = EconomyState()
+    commands = plan_economy(view, None, state)
+    assert state.builder_id == 10010  # 离蓝格最近的工人当建造者
+    assert enum_to_str(commands[10010].action) == "build"
+    assert 10012 in commands  # 另一人去采矿，而不是抢同一格
+
+
 def test_workers_assigned_distinct_mines() -> None:
-    """Given 两工人与两矿区，When 规划经济，Then 分派不同矿区（避免同矿争夺）。"""
+    """Given 两矿区与两名采卖工人，When 规划经济，Then 分派不同矿区（避免同矿争夺）。"""
     view = _view(
         [STATION, _role(10010, "worker", 5, 5, 220), _role(10012, "worker", 5, 6, 220)],
         zones=[_mine(6, 5), _mine(6, 6)],
     )
-    commands = plan_economy(view)
-    targets = {commands[uid].targetPos[0] for uid in (10010, 10012)}
-    assert len(targets) == 2
+    assignment = plan_economy.__globals__["_assign_mines"](view, list(view.own_workers()))
+    assert len(set(assignment.values())) == 2
 
 
 def main() -> int:
@@ -223,3 +249,29 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_dusk_stages_roles_at_weapon_control_cells() -> None:
+    """Given 白天后段（第 40 回合起）且有武器，When 规划经济，Then 角色就位到操控位。
+
+    旧实现只把角色送回基地，而基地并不总是贴着武器，夜里前几回合只有 1 座武器
+    有操控者 —— 这是「第一晚被推平」的直接原因之一。
+    """
+    round_no = 41  # 白天第 41 回合（第 1 天，已过黄昏阈值）
+    weapon = Pos(22, 20)
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(10040, "rocket", 22, 20, 1000, level=1, attackPower=20, attackRange=10),
+        _role(10010, "worker", 23, 20, 220),  # 已在操控位
+        _role(10011, "pioneer", 26, 20, 200),  # 需要在黄昏赶回
+        _role(10012, "worker", 27, 20, 220),
+    ]
+    view = _view(roles, round_no=round_no)
+    assert view.is_day()
+    commands = plan_economy(view)
+    # 每座武器都有操控者；远处的角色朝武器靠拢（而不是全部回基地放羊）
+    assignment = assign_controllers(view)
+    assert set(assignment) == {w.id for w in view.own_weapons()}
+    movers = [c for c in commands.values() if enum_to_str(c.action) == "move"]
+    assert movers
+    assert any(chebyshev(c.targetPos[0], weapon) <= 4 for c in movers)

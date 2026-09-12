@@ -149,35 +149,42 @@ def infer_buildable_cells(
     blocked.update(base_cells(own_base))
     if enemy_base is not None:
         blocked.update(base_cells(enemy_base))
-    blue = _ring(
-        map_info,
-        own_base,
-        1,
-        inference.blue_radius,
-        blocked | set(inference.refuted_weapon),
-    )
-    yellow = _ring(
-        map_info,
-        own_base,
-        1,
-        inference.yellow_radius,
-        blocked | blue | set(inference.refuted_wall),
-    )
+    weapon_blocked = blocked | set(inference.refuted_weapon)
+    wall_blocked = blocked | set(inference.refuted_wall)
+    blue = _field(map_info, own_base, 1, inference.blue_radius, weapon_blocked)
+    yellow = _field(
+        map_info, own_base, 1, inference.yellow_radius, wall_blocked
+    ) - blue
     return frozenset(blue), frozenset(yellow)
 
 
-def _ring(
-    map_info: MapInfo, own_base: Pos, min_dist: int, max_dist: int, excluded: set[Pos]
+def _field(
+    map_info: MapInfo,
+    own_base: Pos,
+    min_dist: int,
+    max_dist: int,
+    excluded: set[Pos],
 ) -> set[Pos]:
-    """到基地块切比雪夫距离 ∈ [min_dist, max_dist] 且未排除的格。"""
+    """到基地块切比雪夫距离 ∈ [min_dist, max_dist] 的未排除格。
+
+    任务书没有蓝/黄区域坐标表，只给了「基地附近有蓝色（武器）与黄色（围墙）
+    可建造区域」这一几何事实（§4.1 + 配图）。蓝区取距离 1..``blue_radius``、
+    黄区取距离 1..``yellow_radius``，两者相减（先蓝后黄）。相比只有一圈的
+    「环形」，区间式把基地紧邻的内圈也纳入 —— 那正是最适合建武器的一圈
+    （操控者能在基地内就位，夜晚第 1 回合即可开火）。
+
+    区间内仍可能有误判格，判题器的 ``lastRoundRoleActionResults`` 反馈会通过
+    ``refuted_*`` 逐一剔除（见 ``apply_build_feedback``）。
+    """
     block = base_cells(own_base)
     cells: set[Pos] = set()
     for x in range(map_info.width):
         for y in range(map_info.height):
             pos = Pos(x, y)
-            if pos in excluded:
+            if pos in block or pos in excluded:
                 continue
-            if min_dist <= min(chebyshev(pos, cell) for cell in block) <= max_dist:
+            distance = min(chebyshev(pos, cell) for cell in block)
+            if min_dist <= distance <= max_dist:
                 cells.add(pos)
     return cells
 

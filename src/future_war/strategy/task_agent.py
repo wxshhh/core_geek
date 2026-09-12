@@ -68,6 +68,11 @@ def plan_task(
     if not _enabled(config):
         return TaskAction({})
     state = state if state is not None else TaskState()
+    if _must_return_home(view, config):
+        # 黄昏/夜晚：任务再香也不如多一座武器开火（《任务书》§五：离开任务点或
+        # 超时都只是任务结束，会按已提交的最佳答案结算，不会白做）
+        _reset(state)
+        return TaskAction({})
     pioneer = view.own_pioneer()
     if not pioneer:
         return TaskAction({})
@@ -157,6 +162,19 @@ def _reset(state: TaskState) -> None:
 def _enabled(config: Config | None) -> bool:
     value = config.get("tasks.self_evolution_enabled") if config is not None else None
     return value is not False
+
+
+def _must_return_home(view: WorldView, config: Config | None) -> bool:
+    """是否必须回防：夜晚，或白天已进入黄昏就位阶段。"""
+    if view.is_night():
+        return True
+    threshold = _int_config(config, "economy.dusk_return", 40)
+    return (view.round_no - 1) % _DAY_LENGTH >= threshold
+
+
+def _int_config(config: Config | None, key: str, default: int) -> int:
+    value = config.get(key) if config is not None else None
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
 
 
 def _enough_time(view: WorldView, config: Config | None) -> bool:

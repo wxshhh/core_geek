@@ -86,15 +86,14 @@ def _config(order: list[str] | None = None) -> Config:
 STATION = _role(10013, "station", 20, 20, 1500, level=1)
 
 
-def test_preferred_weapon_cells_ranks_forward_first() -> None:
-    """Given 蓝色可建造格，When 排序，Then 离基地越远越靠前（前出迎敌）。"""
+def test_preferred_weapon_cells_ranks_near_base_first() -> None:
+    """Given 蓝色可建造格，When 排序，Then 离基地越近越靠前（贴基地建造）。"""
     view = _view([STATION])
     cells = preferred_weapon_cells(view)
     assert cells
-    base = view.base_pos()
-    assert base is not None
-    distances = [chebyshev(c, base) for c in cells]
-    assert distances == sorted(distances, reverse=True)
+    block = tuple(view.base_cells())
+    distances = [min(chebyshev(c, cell) for cell in block) for c in cells]
+    assert distances == sorted(distances)
 
 
 def test_upgrade_order_reads_config() -> None:
@@ -173,3 +172,45 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_wall_line_builds_three_sides_and_skips_back() -> None:
+    """Given 来袭方向在基地右侧，When 规划围墙，Then 只建右/上/下三面且右侧优先。
+
+    用户实测：机器人从基地一侧刷出，所以围墙只需三面（U 形），背面不建 ——
+    既省石头又不会把己方角色围死。
+    """
+    from future_war.strategy.builder import wall_line
+
+    view = _view([STATION])
+    base = view.base_pos()
+    assert base is not None
+    line = wall_line(view, None, None, None, (1, 0))
+    assert line, "应产出候选墙位"
+    # 背面（来袭方向的反面）完全不建：左下方属「下面」，仍保留
+    block = tuple(view.base_cells())
+    def backish(c):
+        dx, dy = c.x - base.x, c.y - base.y
+        dist = max(abs(dx), abs(dy))
+        return dist > 0 and (dx * 1 + dy * 0) / dist < -0.5
+
+    assert not [c for c in line if backish(c)]
+    # 右侧（正对来袭面）整体排在前面
+    right = [c for c in line if c.x > base.x]
+    assert right
+    assert line[0] in right
+    # 上/下两面仍然要建（补成 U 形，防绕后）
+    assert any(c.y > base.y for c in line)
+    assert any(c.y < base.y for c in line)
+
+
+def test_wall_line_covers_all_sides_without_direction() -> None:
+    """Given 未知来袭方向，When 规划围墙，Then 退化为四面全建（不排除任何一面）。"""
+    from future_war.strategy.builder import wall_line
+
+    view = _view([STATION])
+    base = view.base_pos()
+    assert base is not None
+    line = wall_line(view, None, None, None, None)
+    assert any(c.x < base.x for c in line)
+    assert any(c.x > base.x for c in line)

@@ -17,6 +17,7 @@ from future_war.models import Action, Pos, RobotRole, Role, RoleCommand, enum_to
 from future_war.core.nav import resolve_moves
 from future_war.core.world_map import chebyshev
 from future_war.core.world_view import WorldView
+from future_war.strategy.builder import assign_controllers
 
 BASE_HOLD_RANGE: Final = 2
 _CONTROLLER_RANGE: Final = 1
@@ -33,13 +34,29 @@ def plan_defense(
     assigned: set[int] = set()
     mobile = list(view.own_workers()) + list(view.own_pioneer())
     robots = list(view.robots_targeting_us())
+    weapons = sorted(view.own_weapons(), key=lambda w: w.id)
+    # 优先按「白天就位阶段」的分配配对，保证角色待在正确的武器旁
+    preferred = assign_controllers(view, tuple(weapons))
+    # 残血角色退回基地保命：角色阵亡 = 20 回合无人操控武器（§4.5.2），
+    # 但撤退优先级低于开火，所以已有操控者的武器不受影响。
+    hurt = retreating_roles(view, config)
+    healthy = [r for r in mobile if r.id not in hurt]
     armed: list[tuple[Role, Role]] = []
-    for weapon in sorted(view.own_weapons(), key=lambda w: w.id):
+    for weapon in weapons:
         if weapon.cooldown > 0:
             continue
-        controller = _nearest_within(mobile, weapon.pos, _CONTROLLER_RANGE, assigned)
+        candidates = []
+        uid = preferred.get(weapon.id)
+        if uid is not None:
+            candidates = [r for r in healthy if r.id == uid and r.id not in assigned]
+        controller = _pick_ready(candidates, weapon, assigned) or _nearest_within(
+            healthy, weapon.pos, _CONTROLLER_RANGE, assigned
+        )
         if controller is None:
-            free = _nearest_within(mobile, weapon.pos, None, assigned)
+            # 无操控者：只有射程内有敌人（或该武器本就是某角色的待命目标）才派人过去
+            if not _in_range(robots, weapon):
+                continue
+            free = _nearest_within(healthy, weapon.pos, None, assigned)
             if free is not None:
                 goals[free.id] = weapon.pos
                 assigned.add(free.id)
@@ -52,24 +69,75 @@ def plan_defense(
             controllerId=str(controller.id),
             targetPos=(target.pos,),
         )
-    _send_home(view, mobile, assigned, goals)
+    _send_home(view, mobile, assigned, goals, config)
     for uid, step in resolve_moves(view, goals).items():
         if step is not None:
             commands[uid] = RoleCommand(action=Action.MOVE, targetPos=(step,))
     return commands
 
 
+def _pick_ready(
+    candidates: list[Role], weapon: Role, assigned: set[int]
+) -> Role | None:
+    """从候选角色里挑一个已经站在武器操控范围内的（本回合即可开火）。"""
+    ready = [
+        role
+        for role in candidates
+        if role.id not in assigned
+        and chebyshev(role.pos, weapon.pos) <= _CONTROLLER_RANGE
+    ]
+    if not ready:
+        return None
+    return min(ready, key=lambda r: (chebyshev(r.pos, weapon.pos), r.id))
+
+
+def _in_range(robots: list[RobotRole], weapon: Role) -> bool:
+    return any(chebyshev(r.pos, weapon.pos) <= weapon.attackRange for r in robots)
+
+
 def _send_home(
-    view: WorldView, mobile: list[Role], assigned: set[int], goals: dict[int, Pos]
+    view: WorldView,
+    mobile: list[Role],
+    assigned: set[int],
+    goals: dict[int, Pos],
+    config: Config | None = None,
 ) -> None:
     base = view.base_pos()
     if base is None:
         return
+    hurt = retreating_roles(view, config)
     for role in mobile:
         if role.id in assigned:
             continue
-        if chebyshev(role.pos, base) > BASE_HOLD_RANGE:
+        if role.id in hurt or chebyshev(role.pos, base) > BASE_HOLD_RANGE:
             goals[role.id] = base
+
+
+def retreating_roles(view: WorldView, config: Config | None = None) -> frozenset[int]:
+    """残血到「再挨一下就没了」的角色：应退回基地，把操控位让给健康角色。
+
+    设置 ``offense.retreat_hp_ratio=0`` 可关闭该行为。撤退优先级低于操控武器，
+    因此不会出现「为了保命把武器丢空」的情况。
+    """
+    ratio = _ratio_flag(config, "offense.retreat_hp_ratio", RETREAT_HP_RATIO)
+    if ratio <= 0:
+        return frozenset()
+    out = []
+    for role in list(view.own_workers()) + list(view.own_pioneer()):
+        max_hp = {"worker": 220, "pioneer": 200}.get(enum_to_str(role.roleType), 200)
+        if max_hp and role.health <= max_hp * ratio:
+            out.append(role.id)
+    return frozenset(out)
+
+
+RETREAT_HP_RATIO: Final = 0.35
+
+
+def _ratio_flag(config: Config | None, key: str, default: float) -> float:
+    value = config.get(key) if config is not None else None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return default
 
 
 _ROBOT_KINDS: Final = {

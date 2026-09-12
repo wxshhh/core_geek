@@ -182,3 +182,24 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_pioneer_returns_home_at_dusk_instead_of_tasking() -> None:
+    """Given 白天进入黄昏就位阶段，When 规划任务，Then 不再接/做任务（回防操控武器）。"""
+    from future_war.strategy.task_agent import plan_task
+
+    # 白天第 45 回合（已过 economy.dusk_return=40）
+    view = _view(pioneer_pos=(14, 14), round_no=45)
+    state = TaskState()
+    action = plan_task(view, None, state)
+    assert action.commands == {}
+    assert action.execute_cmd == ""
+    assert state.signature is None
+
+
+def test_pioneer_returns_home_at_night() -> None:
+    """Given 夜晚，When 规划任务，Then 不产出任务指令（夜里要操控武器）。"""
+    from future_war.strategy.task_agent import plan_task
+
+    view = _view(pioneer_pos=(14, 14), round_no=85)
+    assert plan_task(view, None, TaskState()).commands == {}

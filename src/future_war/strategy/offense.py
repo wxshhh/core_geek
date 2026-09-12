@@ -15,13 +15,28 @@ from dataclasses import dataclass, field
 from typing import Final
 
 from future_war.config import Config
-from future_war.models import Action, Pos, Role, RoleCommand, enum_to_str
+from future_war.models import Action, Role, RoleCommand, enum_to_str
 from future_war.core.world_map import chebyshev
 from future_war.core.world_view import WorldView
 
 SUMMON_ORDER: Final = "SmallRobotSummonOrder"
 DEFAULT_SUMMON_CAP: Final = 10
-SUMMON_RESERVE: Final = 60
+SUMMON_RESERVE: Final = 100  # 召唤不得挤占防守升级的应急金（economy.emergency_reserve）
+
+# 召唤令 → (商品名, 机器人种类, 击杀积分)。《任务书》§4.6.3 + §4.7.2：
+# 花金币给**对方下个夜晚**加机器人；这些机器人从对方一侧推进，会撞上我们的
+# 武器防线 —— 等于用金币**直接买击杀分**：
+#   小型 20 金/1 分 = 20 金/分；中型 30 金/2 分 = **15 金/分（最优）**；
+#   大型 100 金/4 分 = 25 金/分；BOSS 200 金/10 分 = 20 金/分（血厚难杀，不推荐）。
+# 每天最多 10 张（所以上限 ≈ 150 金换 10 分/天），是积分规则里唯一可主动放大的项。
+DEFAULT_SNIPE_HP_RATIO: Final = 0.3  # 只在对方残血时狙杀，避免牺牲清波火力
+
+_SUMMON_ECONOMY: Final = (
+    ("MiddleRobotSummonOrder", 30, "middleRobot"),
+    ("SmallRobotSummonOrder", 20, "smallRobot"),
+    ("BossRobotSummonOrder", 200, "bossRobot"),
+    ("LargeRobotSummonOrder", 100, "largeRobot"),
+)
 _MOBILE_KINDS: Final = frozenset({"pioneer", "worker"})
 _CONTROLLER_RANGE: Final = 1
 
@@ -59,6 +74,8 @@ def _plan_base_snipe(
 ) -> dict[int, RoleCommand]:
     if not _flag(config, "offense.base_snipe_enabled", True):
         return {}
+    if _base_under_threat(view):
+        return {}  # 自家吃紧时绝不把武器火力挪去轰敌基地（生存分 >> 击杀分）
     target = view.enemy_base_pos()
     if target is None:
         return {}
@@ -73,12 +90,31 @@ def _plan_base_snipe(
     return commands
 
 
+def _base_under_threat(view: WorldView) -> bool:
+    """基地附近（切比雪夫 ≤4）是否还有瞄准我方的机器人。"""
+    base = view.base_pos()
+    if base is None:
+        return False
+    return any(
+        chebyshev(robot.pos, base) <= 4 for robot in view.robots_targeting_us()
+    )
+
+
 def _plan_role_snipe(
     view: WorldView, config: Config | None, exclude: frozenset[int]
 ) -> dict[int, RoleCommand]:
+    """狙杀视野内敌方机动单位；默认只在**对方残血**时出手（见 ``role_snipe_hp_ratio``）。
+
+    敌方单位阵亡后要等「次日白天开始后 20 回合」才复活、且背包保留（§4.5.2），
+    所以打断一次就等于废掉对手近 20 回合的经济/任务链。默认阈值让这条只在
+    「一发能收掉」时才用，避免为了骚扰而牺牲清波火力。
+    """
     if not _flag(config, "offense.role_snipe_enabled", False):
         return {}
-    enemies = list(view.enemy_mobile_units())
+    threshold = _ratio_flag(config, "offense.role_snipe_hp_ratio", DEFAULT_SNIPE_HP_RATIO)
+    enemies = [
+        e for e in view.enemy_mobile_units() if _role_hp_ratio(e) <= threshold
+    ]
     if not enemies:
         return {}
     commands: dict[int, RoleCommand] = {}
@@ -94,33 +130,48 @@ def _plan_role_snipe(
     return commands
 
 
+def _role_hp_ratio(role: Role) -> float:
+    """敌方角色血量比例（上限按 §4.5.2：工人 220 / 开拓者 200）。"""
+    max_hp = {"worker": 220, "pioneer": 200}.get(enum_to_str(role.roleType), 200)
+    return role.health / max_hp if max_hp else 1.0
+
+
 def _plan_summon(
     view: WorldView, config: Config | None, state: OffenseState | None
 ) -> dict[int, RoleCommand]:
-    if not _flag(config, "offense.summon_harass_enabled", False):
+    """把「花不完的金币」换成击杀分：买性价比最高的召唤令（详见 ``_SUMMON_ECONOMY``）。
+
+    只在**白天**买（夜晚商店交易同样合法，但夜里角色要操控武器，走开就少一座武器
+    开火）；只花掉超出应急金的部分，绝不挤占武器/基地升级。
+    """
+    if not _flag(config, "offense.summon_harass_enabled", False) or not view.is_day():
         return {}
     state = state if state is not None else OffenseState()
     state.sync(view)
     cap = _int_flag(config, "offense.summon_daily_cap", DEFAULT_SUMMON_CAP)
-    if state.summons_today >= cap or view.gold() < SUMMON_RESERVE:
+    if state.summons_today >= cap:
+        return {}
+    reserve = _int_flag(config, "offense.summon_reserve", SUMMON_RESERVE)
+    available = view.gold() - reserve
+    if available <= 0:
         return {}
     shop = view.weapon_shop_pos()
     if shop is None:
         return {}
     buyer = next(
-        (
-            role
-            for role in view.own_workers()
-            if chebyshev(role.pos, shop) <= 1
-        ),
+        (role for role in view.own_workers() if chebyshev(role.pos, shop) <= 1),
         None,
     )
     if buyer is None:
         return {}
+    order = next(
+        (name for name, price, _kind in _SUMMON_ECONOMY if price <= available),
+        None,
+    )
+    if order is None:
+        return {}
     state.summons_today += 1
-    return {
-        buyer.id: RoleCommand(action=Action.BUY, name=SUMMON_ORDER, num=1)
-    }
+    return {buyer.id: RoleCommand(action=Action.BUY, name=order, num=1)}
 
 
 def _armed(
@@ -155,3 +206,10 @@ def _flag(config: Config | None, key: str, default: bool) -> bool:
 def _int_flag(config: Config | None, key: str, default: int) -> int:
     value = config.get(key) if config is not None else None
     return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def _ratio_flag(config: Config | None, key: str, default: float) -> float:
+    value = config.get(key) if config is not None else None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return default

@@ -11,7 +11,8 @@ from future_war.strategy.builder import (
     preferred_weapon_cells,
     upgrade_order,
 )
-from future_war.strategy.combat import plan_defense
+from future_war.strategy.combat import plan_defense, retreating_roles
+from future_war.strategy.consumables import ConsumableState, plan_consumables
 from future_war.strategy.economy import plan_economy
 from future_war.strategy.llm_manager import LLMManager
 from future_war.strategy.offense import OffenseState, plan_offense
@@ -39,6 +40,7 @@ from future_war.strategy.treasure import (
 
 __all__ = [
     "CmdResult",
+    "ConsumableState",
     "LLMManager",
     "NewsEffect",
     "OffenseState",
@@ -56,9 +58,11 @@ __all__ = [
     "parse_official_news",
     "plan_defense",
     "plan_economy",
+    "plan_consumables",
     "plan_offense",
     "plan_task",
     "plan_treasure",
+    "retreating_roles",
     "plan_turn",
     "plan_upgrades",
     "preferred_weapon_cells",

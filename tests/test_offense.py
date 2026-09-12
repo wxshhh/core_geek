@@ -87,7 +87,21 @@ def test_base_snipe_disabled_by_config() -> None:
 
 
 def test_role_snipe_when_enabled() -> None:
-    """Given 视野内敌方工人，When 开启角色狙击，Then 武器攻击该工人。"""
+    """Given 视野内敌方工人**已残血**，When 开启角色狙击，Then 武器补刀该工人。"""
+    roles = [
+        _role(10013, "station", 10, 24, 1500, level=1),
+        _role(10040, "rocket", 9, 24, 1000, level=1, attackPower=20, attackRange=10),
+        _role(10010, "worker", 10, 24, 220),
+    ]
+    enemy = [_role(20010, "worker", 12, 24, 60)]  # 60/220 ≈ 0.27 < 0.3
+    view = _view(roles=roles, enemy=enemy)
+    commands = plan_offense(view, _config(role_snipe_enabled=True))
+    assert enum_to_str(commands[10040].action) == "attack"
+    assert commands[10040].targetPos == (Pos(12, 24),)
+
+
+def test_role_snipe_skips_healthy_enemy() -> None:
+    """Given 敌方单位满血，When 开启角色狙击，Then 不为一发打不死的骚扰浪费火力。"""
     roles = [
         _role(10013, "station", 10, 24, 1500, level=1),
         _role(10040, "rocket", 9, 24, 1000, level=1, attackPower=20, attackRange=10),
@@ -95,9 +109,7 @@ def test_role_snipe_when_enabled() -> None:
     ]
     enemy = [_role(20010, "worker", 12, 24, 220)]
     view = _view(roles=roles, enemy=enemy)
-    commands = plan_offense(view, _config(role_snipe_enabled=True))
-    assert enum_to_str(commands[10040].action) == "attack"
-    assert commands[10040].targetPos == (Pos(12, 24),)
+    assert plan_offense(view, _config(role_snipe_enabled=True)) == {}
 
 
 def test_role_snipe_off_by_default() -> None:
@@ -113,17 +125,58 @@ def test_role_snipe_off_by_default() -> None:
 
 
 def test_summon_when_enabled_and_rich() -> None:
-    """Given 余钱且工人在小贩/商店旁，When 开启召唤骚扰，Then 购买召唤令。"""
+    """Given 白天余钱且工人在商店旁，When 开启召唤骚扰，Then 买性价比最高的召唤令。"""
     roles = [
         _role(10013, "station", 20, 20, 1500, level=1),
         _role(10010, "worker", 24, 20, 220),
     ]
-    view = _view(roles=roles, gold=200, zones=SHOP)
+    view = _view(roles=roles, gold=200, zones=SHOP, round_no=10)
     state = OffenseState()
     commands = plan_offense(view, _config(summon_harass_enabled=True), state=state)
     assert enum_to_str(commands[10010].action) == "buy"
-    assert commands[10010].name == "SmallRobotSummonOrder"
+    # 中型 30 金 / 2 分 = 15 金/分，是四种召唤令里性价比最高的
+    assert commands[10010].name == "MiddleRobotSummonOrder"
     assert state.summons_today == 1
+
+
+def test_summon_only_in_daytime() -> None:
+    """Given 夜晚，When 开启召唤骚扰，Then 不买（角色要留着力操控武器）。"""
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(10010, "worker", 24, 20, 220),
+    ]
+    view = _view(roles=roles, gold=200, zones=SHOP)  # NIGHT
+    state = OffenseState()
+    assert plan_offense(view, _config(summon_harass_enabled=True), state=state) == {}
+
+
+def test_summon_respects_reserve() -> None:
+    """Given 金币只够应急金，When 规划召唤，Then 一分钱都不花（不挤占防守升级）。"""
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(10010, "worker", 24, 20, 220),
+    ]
+    view = _view(roles=roles, gold=100, zones=SHOP, round_no=10)
+    state = OffenseState()
+    commands = plan_offense(
+        view, _config(summon_harass_enabled=True, summon_reserve=100), state=state
+    )
+    assert commands == {}
+    assert state.summons_today == 0
+
+
+def test_summon_picks_affordable_order() -> None:
+    """Given 金币只够小型召唤令，When 规划，Then 退化为小型（而不是什么都不买）。"""
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(10010, "worker", 24, 20, 220),
+    ]
+    view = _view(roles=roles, gold=125, zones=SHOP, round_no=10)
+    state = OffenseState()
+    commands = plan_offense(
+        view, _config(summon_harass_enabled=True, summon_reserve=100), state=state
+    )
+    assert commands[10010].name == "SmallRobotSummonOrder"
 
 
 def test_summon_respects_daily_cap() -> None:
@@ -132,7 +185,7 @@ def test_summon_respects_daily_cap() -> None:
         _role(10013, "station", 20, 20, 1500, level=1),
         _role(10010, "worker", 24, 20, 220),
     ]
-    view = _view(roles=roles, gold=200, zones=SHOP)
+    view = _view(roles=roles, gold=200, zones=SHOP, round_no=10)
     state = OffenseState(day=view.day, summons_today=10)
     commands = plan_offense(
         view, _config(summon_harass_enabled=True, summon_daily_cap=10), state=state

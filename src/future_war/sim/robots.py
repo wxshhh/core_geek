@@ -63,9 +63,17 @@ def clear_robots(world: World) -> None:
 
 
 def move_robots(world: World) -> None:
-    """逐只机器人行动：贪心寻路 + 攻击阻挡单位（伤害回合末结算）。"""
+    """逐只机器人行动：贪心寻路 + 攻击阻挡单位（伤害回合末结算）。
+
+    §4.6.3：眩晕法宝命中的机器人眩晕 5 回合，期间**不动也不攻击**
+    （结算优先级 > 机器人移动）。
+    """
     for rid in sorted(world.robots):
-        _step_robot(world, world.robots[rid])
+        robot = world.robots[rid]
+        if robot.dizzy_rounds > 0:
+            robot.dizzy_rounds -= 1
+            continue
+        _step_robot(world, robot)
 
 
 def _step_robot(world: World, rob: Robot) -> None:

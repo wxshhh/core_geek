@@ -9,6 +9,7 @@ from __future__ import annotations
 from future_war.config import Config
 from future_war.models import Request, Response
 from future_war.core.world import WorldModel
+from future_war.strategy.consumables import ConsumableState
 from future_war.strategy.economy import EconomyState
 from future_war.strategy.llm_manager import LLMManager
 from future_war.strategy.offense import OffenseState
@@ -29,6 +30,7 @@ class StrategyBot:
         self._treasure = TreasureState()
         self._task = TaskState()
         self._offense = OffenseState()
+        self._consumables = ConsumableState()
         self._llm = LLMManager.from_config(config)
 
     def __call__(self, request: Request) -> Response:
@@ -42,6 +44,7 @@ class StrategyBot:
             self._treasure,
             self._task,
             self._offense,
+            self._consumables,
         )
         prompt = plan.prompt
         if prompt and not self._llm.note_sent(prompt, view):

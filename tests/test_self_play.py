@@ -106,3 +106,71 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# ------------------------------------------------------------------ 端到端防线回归
+
+
+def _play(seed: int, rounds: int, config):
+    """跑指定回合数的 StrategyBot vs ScriptedBot，返回过程快照。"""
+    from future_war.sim import World, make_layout, engine, ScriptedBot
+    from future_war.sim.judge import TEAM_ORDER, TeamDriver, build_request
+    from future_war.sim.protocol import normalize_response, parse_commands
+    from future_war.strategy import StrategyBot
+
+    world = World(seed=seed, layout=make_layout())
+    bots = {"challenger": StrategyBot(config), "defender": ScriptedBot()}
+    drivers = {t: TeamDriver(team=t, bot=bots[t]) for t in TEAM_ORDER}
+    snapshots = []
+    while world.round_no < rounds:
+        engine.begin_round(world)
+        commands = {}
+        for team in TEAM_ORDER:
+            d = drivers[team]
+            payload = normalize_response(d.bot(build_request(world, team, d)))
+            cmds, _, _ = parse_commands(payload)
+            commands[team] = cmds
+        results = engine.resolve_round(world, commands, {t: set() for t in TEAM_ORDER})
+        for team in TEAM_ORDER:
+            drivers[team].last_results = dict(results[team])
+        base = world.base("challenger")
+        snapshots.append(
+            {
+                "round": world.round_no,
+                "weapons": len(world.weapons("challenger")),
+                "base_hp": max(0, base.hp) if base and base.alive else 0,
+                "commands": commands["challenger"],
+            }
+        )
+    return snapshots
+
+
+def test_first_night_has_three_weapons_and_low_base_damage() -> None:
+    """Given 第 1 天白天，When 跑到第一晚结束，Then 3 座武器就位且基地几乎不掉血。
+
+    回归点：旧实现在第 1 天只能建成 2 座武器、夜里只有 1 座有人操控，
+    第一晚基地就被刷出的机器人推平（用户实测现象）。
+    """
+    snapshots = _play(seed=0, rounds=130, config=load_config())
+    day_one = [s for s in snapshots if s["round"] <= 70]
+    assert day_one[-1]["weapons"] == 3, "第 1 天结束前必须建满 3 座武器"
+    first_night = [s for s in snapshots if 70 < s["round"] <= 130]
+    assert first_night
+    base_hp = first_night[-1]["base_hp"]
+    assert base_hp >= 1400, f"第一晚基地掉血过多: {base_hp}"
+
+
+def test_first_night_three_weapons_fire() -> None:
+    """Given 第一晚，When 机器人进入射程，Then 3 座武器都在同一回合开火。"""
+    snapshots = _play(seed=0, rounds=130, config=load_config())
+    best = 0
+    for snap in snapshots:
+        if snap["round"] <= 70:
+            continue
+        firing = {
+            uid
+            for uid, cmd in snap["commands"].items()
+            if str(cmd.action) == "attack"
+        }
+        best = max(best, len(firing))
+    assert best >= 3, f"第一晚最多只有 {best} 座武器同时开火"

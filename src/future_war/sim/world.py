@@ -72,6 +72,7 @@ class Robot:
     y: int
     hp: int
     target_team: str  # 攻击目标阵营（§1.5.1）
+    dizzy_rounds: int = 0  # 眩晕剩余回合（§4.6.3 DizzyWeapon：5 回合）
 
 
 @dataclass(slots=True)  # noqa: MUTABLE_OK — 世界状态：可变性即设计目的

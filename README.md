@@ -4,6 +4,7 @@
 （`roleCommandMap` / `prompt` / `executeCmd`，见 `docs/接口文档.md` §2）。
 **零第三方运行时依赖**（仅 Python 标准库）。
 
+- **制胜策略（比赛规则 → 落地）**：`docs/策略设计.md`
 - 实现方案：`.omo/plans/future-war-bot.md`
 - 诊断字典（一句话反馈用）：`docs/诊断字典.md`
 - 调优报告：`docs/调优报告.md`
@@ -69,7 +70,7 @@ server.py ── StrategyBot ── planner.plan_turn（昼夜编排）
 | `server.py` | HTTP 入口、请求解析、Bot 调度、异常兜底（进程绝不崩溃） |
 | `models/` | 接口 Request/Response 类型与编解码（宽松解析） |
 | `core/` | 世界模型、可建造区推断、寻路与碰撞规避 |
-| `strategy/` | 经济/战斗/建造/任务/寻宝/推理/对手/进攻/LLM/沙盒/规划 |
+| `strategy/` | 经济/战斗/建造/任务/寻宝/推理/对手/进攻/LLM/沙盒/规划（含黄昏就位、围墙防线、建造反馈修正） |
 | `observability/` | 结构化日志、稳定事件码、每回合 `[METRIC]` 指标行、回放 |
 | `sim/` | 本地模拟器 + mock 判题器（离线回归/自对弈，**明确简化子集**） |
 | `config/` | 集中配置与版本戳 |
@@ -114,5 +115,5 @@ python scripts/package.py --prefix mydir   # 套一层目录（若平台需要�
 - `tests/` — 22 套件、252 测试（零依赖运行器 + pytest 双兼容）
 - `scripts/` — `run_sim.py`（跑模拟对局）、`self_play.py`（批量自对弈）、`replay.py`（回放）
 - `config/` — `default.json` + profile + README
-- `docs/` — 比赛规范（只读）+ 诊断字典 + 调优报告
+- `docs/` — 比赛规范（只读）+ 策略设计 + 诊断字典 + 调优报告
 - `run.sh` — 启动脚本

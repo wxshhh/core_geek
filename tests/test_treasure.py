@@ -26,7 +26,7 @@ LEGEND = (
 )
 
 
-def _request(*, pioneer_backpack=None, folk="", round_no=1):
+def _request(*, pioneer_backpack=None, folk="", round_no=1, gold=0):
     roles = [
         {
             "id": 10013,
@@ -54,7 +54,7 @@ def _request(*, pioneer_backpack=None, folk="", round_no=1):
             "type": "challenger",
             "teamId": "t",
             "teamName": "t",
-            "goldNum": 0,
+            "goldNum": gold,
             "totalScore": 0,
             "roles": roles,
         },
@@ -72,9 +72,13 @@ def _request(*, pioneer_backpack=None, folk="", round_no=1):
     }
 
 
-def _view(*, pioneer_backpack=None, folk=""):
+def _view(*, pioneer_backpack=None, folk="", round_no=1, gold=0):
     return WorldModel().apply_round(
-        parse_request(_request(pioneer_backpack=pioneer_backpack, folk=folk))
+        parse_request(
+            _request(
+                pioneer_backpack=pioneer_backpack, folk=folk, round_no=round_no, gold=gold
+            )
+        )
     )
 
 
@@ -108,8 +112,10 @@ def test_plan_treasure_summons_when_ready() -> None:
 
 def test_plan_treasure_moves_when_far() -> None:
     """Given 开拓者远离候选格，When 规划，Then 发出朝候选格移动。"""
-    view = _view(pioneer_backpack=["AcientTablet"], folk=LEGEND)
-    # 把开拓者放到远处：用第 2 回合构造不了，直接断言返回 move 指令即可
+    view = _view(
+        pioneer_backpack=["AcientTablet", "StarSand", "FlameBreath"], folk=LEGEND
+    )
+    # 物品够了：直接朝候选格移动（不再为补货绕路）
     commands = plan_treasure(view, _config(), TreasureState())
     assert enum_to_str(commands[10011].action) in ("move", "summonTreasure")
 
@@ -155,3 +161,30 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_plan_treasure_returns_home_at_dusk() -> None:
+    """Given 黄昏就位阶段，When 规划寻宝，Then 不动（开拓者要留下操控武器）。"""
+    view = _view(pioneer_backpack=["AcientTablet"], folk=LEGEND, round_no=45)
+    assert plan_treasure(view, _config()) == {}
+
+
+def test_plan_treasure_returns_home_at_night() -> None:
+    """Given 夜晚，When 规划寻宝，Then 不动。"""
+    view = _view(pioneer_backpack=["AcientTablet"], folk=LEGEND, round_no=85)
+    assert plan_treasure(view, _config()) == {}
+
+
+def test_treasure_purchases_missing_item_when_rich() -> None:
+    """Given 传闻要 1 件用品、背包没有、金币够，When 规划寻宝，Then 先买任务用品。
+
+    由开拓者顺路购买（经济工人一回合只能买一件），避免专程跑商店浪费回合。
+    """
+    view = _view(pioneer_backpack=[], folk=LEGEND, gold=100)
+    assert plan_treasure(view, _config()) != {}
+
+
+def test_treasure_purchase_skipped_when_broke() -> None:
+    """Given 金币不足，When 规划寻宝，Then 不买（把金币留给武器/升级）。"""
+    view = _view(pioneer_backpack=[], folk=LEGEND, gold=0)
+    assert plan_treasure(view, _config()) == {}

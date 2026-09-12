@@ -883,3 +883,74 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# ---------------------------------------------------------------- 消耗品（§4.6.3）
+
+
+def test_bomb_damages_robots_in_three_by_three() -> None:
+    """Given 3x3 内有多只机器人，When 工人使用范围炸弹，Then 它们各受 100 伤害。"""
+    from future_war.models import Pos, RoleCommand
+    from future_war.sim import actions, combat
+
+    world = make_world()
+    day_round(world)
+    worker = world.teams["challenger"].units[10010]
+    worker.x, worker.y = 10, 10
+    worker.backpack = ["Bomb"]
+    place_robot(world, 30001, "middleRobot", 12, 10)
+    place_robot(world, 30002, "middleRobot", 12, 11)
+    place_robot(world, 30003, "middleRobot", 20, 20)  # 3x3 之外
+    ok = actions.do_use(
+        world, "challenger", worker, RoleCommand(action="use", name="Bomb", targetPos=(Pos(12, 10),))
+    )
+    assert ok
+    assert "Bomb" not in worker.backpack
+    combat.apply_damage(world)
+    assert 30001 not in world.robots  # 60 - 100 < 0 → 死亡
+    assert 30002 not in world.robots
+    assert world.robots[30003].hp == 40  # 3x3 之外不受影响（place_robot 默认 40 血）
+
+
+def test_bomb_kills_are_credited_to_the_user() -> None:
+    """Given 炸弹击杀，When 结算，Then 计入施放方的击杀分（§六 score2）。"""
+    from future_war.models import Pos, RoleCommand
+    from future_war.sim import actions, combat
+
+    world = make_world()
+    day_round(world)
+    worker = world.teams["challenger"].units[10010]
+    worker.x, worker.y = 10, 10
+    worker.backpack = ["Bomb"]
+    place_robot(world, 30001, "smallRobot", 12, 10)
+    actions.do_use(
+        world, "challenger", worker, RoleCommand(action="use", name="Bomb", targetPos=(Pos(12, 10),))
+    )
+    combat.apply_damage(world)
+    assert world.teams["challenger"].kills["smallRobot"] == 1
+
+
+def test_dizzy_weapon_stops_robots_for_five_rounds() -> None:
+    """Given 机器人被眩晕，When 连续推 5 个夜晚回合，Then 它不动不攻击。"""
+    from future_war.models import Pos, RoleCommand
+    from future_war.sim import actions, robots as sim_robots
+
+    world = make_world()
+    day_round(world)
+    worker = world.teams["challenger"].units[10010]
+    worker.x, worker.y = 10, 10
+    worker.backpack = ["DizzyWeapon"]
+    place_robot(world, 30001, "smallRobot", 12, 10)
+    start = (world.robots[30001].x, world.robots[30001].y)
+    actions.do_use(
+        world,
+        "challenger",
+        worker,
+        RoleCommand(action="use", name="DizzyWeapon", targetPos=(Pos(12, 10),)),
+    )
+    assert world.robots[30001].dizzy_rounds == 5
+    for _ in range(5):
+        sim_robots.move_robots(world)
+        assert (world.robots[30001].x, world.robots[30001].y) == start
+    sim_robots.move_robots(world)  # 第 6 回合恢复行动
+    assert (world.robots[30001].x, world.robots[30001].y) != start

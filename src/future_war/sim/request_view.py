@@ -77,7 +77,7 @@ def build_request(world: World, team: str, driver: RequestContext) -> Request:
             pos=Pos(rob.x, rob.y),
             roleType=rob.kind,
             health=max(0, rob.hp),
-            abnormalState="",
+            abnormalState="dizzy" if rob.dizzy_rounds > 0 else "",
             targetTeam=TeamType(rob.target_team),
         )
         for rob in (world.robots[rid] for rid in sorted(world.robots))

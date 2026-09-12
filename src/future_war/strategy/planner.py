@@ -14,6 +14,7 @@ from future_war.models import RoleCommand
 from future_war.core.world_view import WorldView
 from future_war.strategy.builder import plan_upgrades
 from future_war.strategy.combat import plan_defense
+from future_war.strategy.consumables import ConsumableState, plan_consumables
 from future_war.strategy.economy import EconomyState, plan_economy
 from future_war.strategy.offense import OffenseState, plan_offense
 from future_war.strategy.task_agent import TaskState, plan_task
@@ -36,8 +37,14 @@ def plan_turn(
     treasure_state: TreasureState | None = None,
     task_state: TaskState | None = None,
     offense_state: OffenseState | None = None,
+    consumable_state: ConsumableState | None = None,
 ) -> TurnPlan:
-    """按昼夜选择行为模块，返回本回合 TurnPlan。"""
+    """按昼夜选择行为模块，返回本回合 TurnPlan。
+
+    合并优先级（后者只在角色还空着时补位）：经济/防御 → 消耗品（含保命回血）
+    → 升级券 → 任务/寻宝。保命回血排在任务之前，是因为角色阵亡 = 20 回合无操控
+    （§4.5.2），比多做一轮任务重要。
+    """
     if view.is_night():
         commands = plan_defense(view, config)
         commands.update(
@@ -45,8 +52,10 @@ def plan_turn(
         )
         return TurnPlan(commands=commands)
     commands = plan_economy(view, config, economy_state)
+    for uid, command in plan_consumables(view, config, consumable_state).items():
+        commands.setdefault(uid, command)  # 经济指令优先：不能为了喝药停下建造
     for uid, command in plan_upgrades(view, config).items():
-        commands.setdefault(uid, command)  # 经济指令优先，升级券补空
+        commands.setdefault(uid, command)
     task = plan_task(view, config, task_state)
     commands.update(task.commands)
     if not task.commands:

@@ -8,6 +8,16 @@
 do_POST 经 StrategyBot 规划后返回 roleCommandMap；任何解析/规划失败都降级为空指令
 的合法 Response，进程绝不崩溃（任务书 §八）。约束：连接 10s / 响应 5s 超时；
 进程崩溃即判负。
+
+**超时留证（X-04）**：判题器 5s 内收不到响应即判超时，等真的超时就没有证据了。
+两条路径都记 `[ERROR] X-04`：
+
+1. **回合太慢**——`do_POST` 测端到端耗时（读请求 → 规划 → 落盘日志），达到
+   `server.slow_round_ms`（默认 3000ms = 5s 预算的 60%）就在**发送响应之前**记
+   一条，含 `round_no` 与实测毫秒数；
+2. **读请求/请求体超时**——stdlib 的 `handle_one_request` 会静默吞掉
+   `TimeoutError` 并直接断开连接（既不回包也不留日志），这里在连接收尾时补记
+   X-04，并尽力回一个合法空 Response（判题器对空指令不计队伍异常）。
 """
 
 from __future__ import annotations
@@ -15,14 +25,15 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from collections.abc import Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import TCPServer
 from typing import Final, TypedDict
 
-from future_war.config import load_config, parse_profile_arg
+from future_war.config import Config, load_config, parse_profile_arg
 from future_war.models import parse_request, remove_trailing_commas, serialize_response
-from future_war.observability.events import EventCode
+from future_war.observability.events import EventCode, Phase, phase_of
 from future_war.observability.round_metrics import RoundObserver
 from future_war.strategy import StrategyBot
 
@@ -30,6 +41,9 @@ HOST: Final = "0.0.0.0"
 DEFAULT_PORT: Final = 8080
 # 与判题器 5s 响应预算匹配的 socket 读写上限（docs/任务书.md §八）
 SOCKET_TIMEOUT_SECONDS: Final = 5.0
+# 回合耗时达到该值即记一条 X-04「接近超时」（config server.slow_round_ms）。
+# 默认 3000ms = 5s 预算的 60%：既留足余量，又能在真超时前留下证据。
+SLOW_ROUND_MS_DEFAULT: Final = 3000
 
 
 class RoleCommand(TypedDict):
@@ -64,6 +78,7 @@ class JudgeHTTPServer(ThreadingHTTPServer):
 
     observer: RoundObserver | None = None
     bot: StrategyBot | None = None
+    slow_round_ms: int = SLOW_ROUND_MS_DEFAULT
 
     def server_bind(self) -> None:
         """完成 bind 并登记 server_name/port，跳过 getfqdn。"""
@@ -78,20 +93,73 @@ class JudgeRequestHandler(BaseHTTPRequestHandler):
 
     timeout = SOCKET_TIMEOUT_SECONDS
 
+    def setup(self) -> None:
+        super().setup()
+        reader = _TimeoutAwareReader(self.rfile)
+        self.rfile = reader  # type: ignore[assignment]
+        self._reader = reader
+        self._response_sent = False
+        self._timeout_reported = False
+
+    def handle(self) -> None:
+        """连接级收尾：读请求/请求体超时 → 补一个合法空 Response 并记 X-04。
+
+        背景：``BaseHTTPRequestHandler.handle_one_request`` 内部
+        ``except TimeoutError`` 只 ``log_error`` + 关连接就返回（3.10~3.14 皆然），
+        既不回包也不留我们的日志，所以 ``handle_timeout`` 这个钩子**永远不会被
+        调用**（它是 ``socketserver.BaseServer`` 的钩子，不在 handler 上）。判题器
+        在那种情况下既收不到响应、我们也查不到任何痕迹。这里用 ``rfile`` 代理
+        埋下的信号，在连接收尾时把这两件事都补上。
+        """
+        started = time.perf_counter()
+        try:
+            super().handle()
+        finally:
+            if self._reader.timed_out:
+                self._on_read_timeout(time.perf_counter() - started)
+
+    def handle_timeout(self) -> None:
+        """兜底钩子：若某实现真的调用它，走与 handle() 同一条「留证 + 回包」路径。"""
+        self._on_read_timeout(SOCKET_TIMEOUT_SECONDS)
+
     def do_POST(self) -> None:
         """POST 任意路径：解析请求体，规划指令，落盘回合并返回 Response。"""
+        started = time.perf_counter()
         request = self._parse_request(self._read_body())
         response = self._respond(request)
         self._observe(request, response)
+        self._warn_if_slow(started, request)
         self._send_response(response)
 
-    def handle_timeout(self) -> None:
-        """读/写超时仍返回合法 Response，避免被判「响应格式错误」（§八）。"""
+    def _on_read_timeout(self, elapsed_s: float) -> None:
+        """读请求/请求体超时：先记一条 X-04 留证，再尽力回一个合法空 Response。
+
+        判题器对「空指令」不计队伍异常，而被掐断的连接会记成响应超时/格式错误，
+        所以即使连接可能已经关闭也要试着回包（失败只告警）。
+
+        注意：读请求行就超时的情况下 ``parse_request`` 从未执行，
+        ``request_version`` / ``requestline`` **没有类级默认值**（stdlib 只在
+        ``handle_one_request``/``parse_request`` 里赋值），直接发响应会
+        AttributeError —— 这里先把最小 HTTP 状态补齐，保证判题器能解析。
+        """
+        if self._timeout_reported:
+            return
+        self._timeout_reported = True
+        self._emit(
+            EventCode.X_04,
+            f"request read timed out (socket budget {SOCKET_TIMEOUT_SECONDS:.0f}s)",
+            elapsedMs=int(elapsed_s * 1000),
+        )
+        if self._response_sent:
+            return
+        self.request_version = "HTTP/1.1"  # 没读到请求行 → 用 1.1 状态行（1.0 无法解析）
+        self.requestline = getattr(self, "requestline", "") or ""
         try:
             self._send_response(EMPTY_RESPONSE)
-        except OSError:
+        except (OSError, ValueError) as exc:
+            # 连接已关闭 → BrokenPipe/ConnectionReset；wfile 已关 → ValueError
             print(
-                "[future-war] WARN timeout response not sent (connection closed)",
+                f"[future-war] WARN timeout response not sent ({exc})",
                 file=sys.stderr,
                 flush=True,
             )
@@ -142,16 +210,45 @@ class JudgeRequestHandler(BaseHTTPRequestHandler):
         observer = getattr(self.server, "observer", None)
         if observer is None or request is None:
             return
-        round_no = request.get("roundNo")
-        if not isinstance(round_no, int) or isinstance(round_no, bool):
-            round_no = 0
-        observer.observe(round_no, request, response)
+        round_no = _round_no_of(request)
+        observer.observe(round_no if round_no is not None else 0, request, response)
 
-    def _emit(self, code: EventCode, message: str) -> None:
-        """畸形请求不计入队伍异常（§八）：记结构化行并向 stderr 告警。"""
+    def _warn_if_slow(self, started: float, request: dict[str, object] | None) -> None:
+        """回合耗时逼近 5s 响应预算 → 一条 X-04（任务书 §八）。
+
+        测的是「读请求 → 规划 → 落盘」的端到端耗时，并在 `_send_response` **之前**
+        落盘：日志先于响应可见，即使随后发送阻塞/失败也留得下证据。
+        """
+        threshold = getattr(self.server, "slow_round_ms", SLOW_ROUND_MS_DEFAULT)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        if threshold <= 0 or elapsed_ms < threshold:
+            return
+        round_no = _round_no_of(request)
+        self._emit(
+            EventCode.X_04,
+            f"response near {SOCKET_TIMEOUT_SECONDS:.0f}s budget: {elapsed_ms:.0f}ms",
+            round_no=round_no,
+            phase=phase_of(round_no) if round_no is not None else Phase.NONE,
+            elapsedMs=int(elapsed_ms),
+            thresholdMs=threshold,
+        )
+
+    def _emit(
+        self,
+        code: EventCode,
+        message: str,
+        *,
+        round_no: int | None = None,
+        phase: Phase = Phase.NONE,
+        **fields: object,
+    ) -> None:
+        """异常/告警行：记结构化事件并向 stderr 告警。
+
+        畸形请求不计入队伍异常（§八）——异常计数由判题器负责，这里只是留证。
+        """
         observer = getattr(self.server, "observer", None)
         if observer is not None:
-            observer.emit(code, message)
+            observer.emit(code, message, round_no=round_no, phase=phase, **fields)
         print(f"[future-war] WARN {message}", file=sys.stderr, flush=True)
 
     def _send_response(self, payload: dict[str, object]) -> None:
@@ -161,6 +258,47 @@ class JudgeRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+        self._response_sent = True
+
+
+class _TimeoutAwareReader:
+    """``rfile`` 代理：把「这次读超时了」记下来，再把异常原样抛出。
+
+    为什么要代理：``handle_one_request`` 会自己吞掉 ``TimeoutError``，外层拿不到
+    任何信号；有了这个标记，连接收尾时就能区分
+    「读超时」（``timed_out=True``，要回包留证）与
+    「对端正常关闭」（``readline()`` 返回 ``b""``，不该回包）。
+    """
+
+    __slots__ = ("_stream", "timed_out")
+
+    def __init__(self, stream: object) -> None:
+        self._stream = stream
+        self.timed_out = False
+
+    def readline(self, *args: object) -> bytes:
+        return self._guard(self._stream.readline, args)  # type: ignore[attr-defined]
+
+    def read(self, *args: object) -> bytes:
+        return self._guard(self._stream.read, args)  # type: ignore[attr-defined]
+
+    def _guard(self, func: object, args: tuple[object, ...]) -> bytes:
+        try:
+            return func(*args)  # type: ignore[operator]
+        except TimeoutError:
+            self.timed_out = True
+            raise
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._stream, name)  # close()/flush() 等原样透传
+
+
+def _round_no_of(request: dict[str, object] | None) -> int | None:
+    """请求里的回合号；缺失/类型不对（含 bool）返回 None（日志渲染为 `-`）。"""
+    round_no = request.get("roundNo") if isinstance(request, dict) else None
+    if not isinstance(round_no, int) or isinstance(round_no, bool):
+        return None
+    return round_no
 
 
 def resolve_port(port_arg: str | None) -> int:
@@ -168,16 +306,31 @@ def resolve_port(port_arg: str | None) -> int:
     return DEFAULT_PORT if port_arg is None else int(port_arg)
 
 
+def resolve_slow_round_ms(config: Config | None) -> int:
+    """`server.slow_round_ms` 配置读取：非法/缺失回退默认；`0`/负数 = 关闭告警。
+
+    parse-don't-validate：bool（JSON `true`）与字符串都不是合法阈值，一律回退
+    默认——否则 `"3000"` 这类值会让比较静默失效或抛 TypeError。
+    """
+    value = config.get("server.slow_round_ms") if config is not None else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return SLOW_ROUND_MS_DEFAULT
+    return int(value)
+
+
 def create_server(
     port: int,
     observer: RoundObserver | None = None,
     bot: StrategyBot | None = None,
+    *,
+    slow_round_ms: int = SLOW_ROUND_MS_DEFAULT,
 ) -> JudgeHTTPServer:
     """构建监听 HOST:port 的多线程 HTTP 服务（工作线程随主进程退出）。"""
     server = JudgeHTTPServer((HOST, port), JudgeRequestHandler)
     server.daemon_threads = True
     server.observer = observer
     server.bot = bot
+    server.slow_round_ms = slow_round_ms
     return server
 
 
@@ -202,7 +355,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not 0 <= port <= 65535:
         print(f"[future-war] ERROR port {port} out of range 0-65535", file=sys.stderr)
         return 2
-    server = create_server(port, observer, bot)
+    server = create_server(port, observer, bot, slow_round_ms=resolve_slow_round_ms(config))
     print(
         f"[future-war] listening on {HOST}:{port} (pid={os.getpid()})",
         file=sys.stderr,

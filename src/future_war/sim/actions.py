@@ -30,12 +30,15 @@ from future_war.sim.rules import (
     in_bounds,
     is_day_round,
 )
-from future_war.sim.world import TeamState, Unit, World
+from future_war.sim.world import DamageEvent, TeamState, Unit, World
 
 _VENDOR: Final = "vendor"
 _WEAPON_SHOP: Final = "weaponShop"
 
 WEAPON_ID_BASES: Final = {"gatling": 20, "railgun": 30, "rocket": 40}
+
+BOMB_DAMAGE: Final = 100  # §4.6.3：范围炸弹 3×3 内 100 伤害
+DIZZY_ROUNDS: Final = 5  # §4.6.3：眩晕法宝 3×3 内眩晕 5 回合
 
 BUILDABLE_KINDS: Final = (*WEAPON_TYPES, "wall")
 
@@ -262,7 +265,7 @@ def do_drop(world: World, team: str, unit: Unit, cmd: RoleCommand) -> bool:
 
 
 def do_use(world: World, team: str, unit: Unit, cmd: RoleCommand) -> bool:
-    """使用消耗品：已实现 Medicine / WallFixer；其余返回无效（简化，见 README）。"""
+    """使用消耗品：Medicine / WallFixer / Bomb / DizzyWeapon（§4.6.3）。"""
     item = cmd.name
     if not unit.is_role or item is None or item not in unit.backpack:
         return False
@@ -283,6 +286,36 @@ def do_use(world: World, team: str, unit: Unit, cmd: RoleCommand) -> bool:
             unit.backpack.remove(item)
             existing[1].hp = existing[1].max_hp
             return True
+        case "Bomb":
+            if not cmd.targetPos:
+                return False
+            pos = cmd.targetPos[0]
+            unit.backpack.remove(item)
+            _aoe(world, pos, BOMB_DAMAGE, team)
+            return True
+        case "DizzyWeapon":
+            if not cmd.targetPos:
+                return False
+            pos = cmd.targetPos[0]
+            unit.backpack.remove(item)
+            _aoe_dizzy(world, pos, DIZZY_ROUNDS)
+            return True
         case _:
-            return False  # 升级券/眩晕法宝/范围炸弹/召唤令未实现（README）
+            return False  # 升级券/召唤令未实现（README）
+
+
+def _aoe(world: World, center: Pos, damage: int, team: str) -> None:
+    """以 center 为中心的 3×3 内机器人受 damage（§4.6.3 范围炸弹）。"""
+    for robot in world.robots.values():
+        if max(abs(robot.x - center.x), abs(robot.y - center.y)) <= 1:
+            world.pending_damage.append(
+                DamageEvent(source_team=team, amount=damage, robot_rid=robot.rid)
+            )
+
+
+def _aoe_dizzy(world: World, center: Pos, rounds: int) -> None:
+    """以 center 为中心的 3×3 内机器人眩晕 rounds 回合（§4.6.3 眩晕法宝）。"""
+    for robot in world.robots.values():
+        if max(abs(robot.x - center.x), abs(robot.y - center.y)) <= 1:
+            robot.dizzy_rounds = max(robot.dizzy_rounds, rounds)
 

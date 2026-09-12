@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from future_war.config import Config
-from future_war.models import Action, Pos, RoleCommand
+from future_war.models import Action, Pos, Role, RoleCommand
 from future_war.core.nav import plan_move
 from future_war.core.world_map import chebyshev
 from future_war.core.world_view import WorldView
@@ -42,6 +42,7 @@ _CN_NUM: Final = {
 }
 _TIMING_WORDS: Final = ("水位", "月", "夜", "时", "晨", "黄昏")
 DEFAULT_ITEM_COUNT: Final = 1
+TASK_ITEM_COST: Final = 15  # §4.6.3：任务用品单价 15 金
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +94,8 @@ def plan_treasure(
     """开拓者的寻宝指令：够物品且到位则召唤，否则朝候选格移动。"""
     if not _enabled(config):
         return {}
+    if _must_return_home(view, config):
+        return {}  # 黄昏/夜晚必须回防操控武器，而不是跑去地图另一头挖宝
     state = state if state is not None else TreasureState()
     state.last_result = view.last_treasure_result()
     clues = parse_clues(view.folk_legend_text())
@@ -102,10 +105,19 @@ def plan_treasure(
     if not pioneer:
         return {}
     unit = pioneer[0]
+    items = _task_items(unit)
+    if len(items) < clues.item_count:
+        # 物品不够：先补货。经济工人在同一回合只能买一件（一条指令），所以
+        # 由开拓者自己顺路买 —— 但绝不在任务期间走开（离开任务点 = 任务结束，§五）。
+        buying = _plan_item_purchase(view, unit, clues.item_count)
+        if buying is not None:
+            return buying
+        # 买不起也不要去：跑到祭坛也开不了，白占开拓者的白天（还要回防）。
+        if view.gold() < TASK_ITEM_COST:
+            return {}
     target = candidate_cell(view, clues.direction)
     if target is None:
         return {}
-    items = _task_items(unit)
     if chebyshev(unit.pos, target) <= 1 and len(items) >= clues.item_count:
         state.probes += 1
         return {
@@ -121,6 +133,56 @@ def plan_treasure(
     return {unit.id: RoleCommand(action=Action.MOVE, targetPos=(step,))}
 
 
+def _plan_item_purchase(
+    view: WorldView, unit: Role, needed: int
+) -> dict[int, RoleCommand] | None:
+    """补买任务用品：到商店旁 → 买；否则朝商店移动。金币不足则放弃（不浪费时间）。"""
+    if view.phase_task():
+        return None  # 任务进行中：离开任务点即失败（§五）
+    shop = view.weapon_shop_pos()
+    if shop is None:
+        return None
+    missing = needed - len(_task_items(unit))
+    if missing <= 0:
+        return None
+    if view.gold() < TASK_ITEM_COST:
+        return None
+    if chebyshev(unit.pos, shop) <= 1:
+        item = _cheapest_item(view)
+        if item is None:
+            return None  # 清单还没下发：不要发一条注定失败的 buy
+        return {unit.id: RoleCommand(action=Action.BUY, name=item, num=1)}
+    step = plan_move(view, unit.id, shop)
+    if step is None:
+        return None
+    return {unit.id: RoleCommand(action=Action.MOVE, targetPos=(step,))}
+
+
+def _cheapest_item(view: WorldView) -> str | None:
+    """从武器商店清单里挑最便宜的任务用品；没有可用报价返回 None。
+
+    真机清单随地图变化（§4.6.3「任务用品列表不固定」），所以只能按当轮报价挑，
+    绝不能硬编码某一种物品名。
+    """
+    quoted = [(price, name) for name, price in _shop_items(view) if name in TASK_ITEMS]
+    if not quoted:
+        return None
+    return min(quoted)[1]
+
+
+def _shop_items(view: WorldView) -> tuple[tuple[str, int], ...]:
+    """当前商店报价（``WorldView`` 只存了名称→价格，这里按固定顺序还原）。"""
+    names = (
+        "AcientTablet", "StarSand", "FlameBreath",
+        "FrostPotion", "ThornAmulet", "IronWhistle",
+    )
+    return tuple(
+        (name, price)
+        for name in names
+        if (price := view.weapon_price(name)) is not None
+    )
+
+
 def _parse_count(raw: str) -> int:
     if raw.isdigit():
         return max(1, int(raw))
@@ -134,6 +196,16 @@ def _task_items(unit) -> list[str]:
 def _enabled(config: Config | None) -> bool:
     value = config.get("tasks.treasure_enabled") if config is not None else None
     return value is not False
+
+
+def _must_return_home(view: WorldView, config: Config | None) -> bool:
+    """是否必须回防：夜晚，或白天已进入黄昏就位阶段。"""
+    if view.is_night():
+        return True
+    threshold = config.get("economy.dusk_return") if config is not None else None
+    if not isinstance(threshold, int) or isinstance(threshold, bool):
+        threshold = 40
+    return (view.round_no - 1) % 130 >= threshold
 
 
 def _probe_cap(config: Config | None) -> int:
