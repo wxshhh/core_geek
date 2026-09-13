@@ -66,8 +66,16 @@ def plan_turn(
         commands.setdefault(uid, command)
     task = plan_task(view, config, task_state)
     commands.update(task.commands)
-    if task.commands:
-        notes.append(f"task={len(task.commands)}")
+    # 回答「接任务后 phase 为什么判空、为何反复 acceptTask」：每条都带上 phaseTask
+    # 的字符数（0 = 判题器没给任务描述）与本回合发出的任务动作
+    phase_text = view.phase_task()
+    task_actions = "+".join(
+        sorted(enum_to_str(c.action) for c in task.commands.values())
+    )
+    notes.append(
+        f"phaseTask_len={len(phase_text)} task_cmd={task_actions or '-'}"
+        f" prompt={int(bool(task.prompt))} cmd={int(bool(task.execute_cmd))}"
+    )
     if not task.commands:
         treasure = plan_treasure(view, config, treasure_state)
         commands.update(treasure)

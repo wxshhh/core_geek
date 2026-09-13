@@ -70,6 +70,8 @@ class EconomyState:
     wall_confirmed: bool = False  # 是否已确认过一处合法围墙位
     wall_dir: tuple[int, int] | None = None  # 来袭方向（首次判定后锁定）
     notes: list[str] = field(default_factory=list)  # 本回合决策摘要（每回合重置，供日志）
+    build_failures: list[tuple[int, int, str]] = field(default_factory=list)
+    wall_refuted_dist: set[int] = field(default_factory=set)  # 整圈都非法的「到基地距离」
 
 
 def plan_economy(
@@ -78,6 +80,7 @@ def plan_economy(
     """为所有工人产出本回合经济指令（建造/采集/贩卖/升级 + 移动）。"""
     state = state if state is not None else EconomyState()
     state.notes = []
+    state.build_failures = []
     _digest_feedback(view, state)
     _roll_probe_day(view, state)
     if not view.is_day():
@@ -141,20 +144,39 @@ def _diagnose(
         f"walls={walls}/{_wall_target(view, state)}",
         f"stone={stone}",
         f"probes={state.wall_probes}",
+        # 背包构成：直接回答「为什么只采石头不采铜铁」
+        "bag=" + ",".join(
+            f"{ore}{sum(w.backpack.count(ore) for w in workers)}"
+            for ore in ("stone", "copper", "iron")
+        ),
+        # 推断出的可建造区规模与包围盒：与真机真实区域对比是否偏移
+        "yellow=" + _zone_box(view.yellow_build_cells()),
+        "blue=" + _zone_box(view.blue_build_cells()),
+        # 围墙闸门状态：直接回答「r15~r44 为什么 issued=none」
+        "wall_gate=" + _wall_gate(view, config, state),
+        "mine=" + _mine_note(view, config, state, workers, orders),
     ]
+    if state.wall_refuted_dist:
+        notes.append(f"refuted_dist={sorted(state.wall_refuted_dist)}")
+    if state.build_failures:
+        notes.append(
+            "fail="
+            + "+".join(f"({x},{y}):{why}" for x, y, why in state.build_failures[:6])
+        )
+    # 下一个要试的墙格 + 它到基地的距离（对照上面 yellow 的包围盒即可看出是否出区）
+    pending = _wall_candidates(view, state, state.failed_build_cells)
+    if pending:
+        base_cells = tuple(view.base_cells())
+        cell = pending[0]
+        dist = min(chebyshev(cell, b) for b in base_cells) if base_cells else -1
+        in_yellow = cell in view.yellow_build_cells()
+        notes.append(f"wall_next=({cell.x},{cell.y}) dist={dist} in_yellow={int(in_yellow)}")
     blocked: list[str] = []
     if weapons < max_weapons:
         if view.gold() < WEAPON_COST:
             blocked.append("weapon:gold")
         elif not _weapon_cells_free(view, state):
             blocked.append("weapon:no-cell")
-    if _flag(config, "build.wall_enabled", True) and walls < _wall_target(view, state):
-        if not _wall_ready(view, state, config):  # 已只读（跨天重置在 _roll_probe_day）
-            blocked.append("wall:probe-denied")
-        elif stone < WALL_COST:
-            blocked.append("wall:no-stone")
-        elif not _wall_line_free(view, state):
-            blocked.append("wall:line-empty")
     if blocked:
         notes.append("blocked=" + ",".join(blocked))
     orders_text = ",".join(f"{uid}:{orders[uid]}" for uid in sorted(orders))
@@ -172,6 +194,88 @@ def _weapon_cells_free(view: WorldView, state: EconomyState) -> bool:
     """蓝区里是否还剩「工人站得进去且没失败过」的候选格（空 → 不可能再建武器）。"""
     free = frozenset(c for c in view.blue_build_cells() if not _occupied(view, c))
     return bool(_free_cells(standable_cells(view, free), state.failed_build_cells))
+
+
+def _wall_candidates(
+    view: WorldView, state: EconomyState, failed: set[Cell]
+) -> tuple[Pos, ...]:
+    """围墙候选：跳过硬性失败格，也跳过「整圈都非法」的那一环。
+
+    为什么按「环」跳过：真机实测 12 次探路**全部失败**却都落在同一圈上，把当天额度
+    烧光也没摸到真实黄区。既然同一圈连错 2 次，这一圈大概率整圈不是黄区，应该立刻
+    往外推进，而不是把剩余额度都花在它身上。
+    """
+    base_cells = tuple(view.base_cells())
+    line = [
+        c
+        for c in wall_line(
+            view, None, None, _occupied_and_failed(view, failed), _threat_dir(view, state)
+        )
+        if not _occupied(view, c)
+        and (
+            not base_cells
+            or min(chebyshev(c, b) for b in base_cells) not in state.wall_refuted_dist
+        )
+    ]
+    return tuple(line)[: _wall_target(view, state) + len(failed)]
+
+
+def _zone_box(cells: frozenset[Pos]) -> str:
+    """可建造区的规模与包围盒：`n个 x[lo-hi] y[lo-hi]`（无则 `none`）。
+
+    真机上把这条与真实区域一比，就知道推断是否整体偏移（而不是一格格猜）。
+    """
+    if not cells:
+        return "none"
+    xs = [c.x for c in cells]
+    ys = [c.y for c in cells]
+    return f"{len(cells)}个 x[{min(xs)}-{max(xs)}] y[{min(ys)}-{max(ys)}]"
+
+
+def _wall_gate(view: WorldView, config: Config | None, state: EconomyState) -> str:
+    """围墙当前卡在哪一步：直接回答「为什么这回合 issued=none」。"""
+    if not _flag(config, "build.wall_enabled", True):
+        return "disabled"
+    if len(view.own_walls()) >= _wall_target(view, state):
+        return "done"
+    if not state.wall_confirmed:
+        if not _wall_ready(view, state, config):
+            budget = _int_config(config, "build.wall_probe_budget", WALL_PROBE_BUDGET)
+            return f"probe_denied({state.wall_probes}/{budget})"
+        if not _wall_window(view, config):
+            start = _int_config(config, "build.wall_probe_from", WALL_PROBE_FROM)
+            now = (view.round_no - 1) % DAY_LENGTH
+            return f"wait_window(r{now}<r{start})"
+    if not _wall_line_free(view, state):
+        return "line_empty"
+    return "ok"
+
+
+def _mine_note(
+    view: WorldView,
+    config: Config | None,
+    state: EconomyState,
+    workers: list[Role],
+    orders: dict[int, str],
+) -> str:
+    """工人**实际**要去的矿种与坐标：回答「为什么只采石头不采铜铁」。
+
+    必须复用真实判定（``_needs_stone`` + 各自职责），否则日志会骗人 ——
+    我第一版这里硬编码 ``need_stone=True``，于是永远显示石矿。
+    """
+    bits = []
+    for worker in workers:
+        order = orders.get(worker.id, "econ")
+        need_stone = _needs_stone(view, state, config, order, worker)
+        mine = _preferred_mine(view, worker, order, None, need_stone)
+        kind = view.mine_at(mine) if mine is not None else None
+        bits.append(
+            f"{worker.id}:{kind or '-'}@{mine.x},{mine.y}"
+            f"(need_stone={int(need_stone)})"
+            if mine is not None
+            else f"{worker.id}:-"
+        )
+    return ",".join(bits) or "-"
 
 
 def _wall_line_free(view: WorldView, state: EconomyState) -> bool:
@@ -409,7 +513,11 @@ def _needs_stone(
         config, "build.day1_max_weapons", MAX_WEAPONS
     ):
         return False  # 建造者手上还有武器要建 → 先专心攒金币，别去挖石头
-    return worker.backpack.count("stone") < _stone_reserve(view, state, config)
+    # **按全队存石量**判断，而不是各人手里的量：储备是「全队备够」的概念，
+    # 否则 2 个工人各囤 4 块（共 8 块）才罢休 —— 真机实测就是「只采石头、
+    # 一整天没有铜铁收入」。全队够了就让所有人转去挖铜/铁换钱。
+    total_stone = sum(w.backpack.count("stone") for w in view.own_workers())
+    return total_stone < _stone_reserve(view, state, config)
 
 
 def _preferred_mine(
@@ -469,17 +577,7 @@ def _plan_build_wall(
     failed = state.failed_build_cells
     if worker.backpack.count("stone") < WALL_COST:
         return None
-    line = tuple(
-        c
-        for c in wall_line(
-            view,
-            None,
-            None,
-            _occupied_and_failed(view, failed),
-            _threat_dir(view, state),
-        )
-        if not _occupied(view, c)
-    )[: _wall_target(view, state) + len(failed)]
+    line = _wall_candidates(view, state, failed)
     if not line:
         return None
     cells = frozenset(line)
@@ -672,12 +770,20 @@ def _digest_feedback(view: WorldView, state: EconomyState) -> None:
     直接看「目标格上现在有没有对应建筑」比读动作结果更可靠（结果位还可能被
     同回合的移动结算覆盖）。不修正推断，工人会在同一个非法格上无限重试。
     """
+    base_cells = tuple(view.base_cells())
     for uid, (cell, is_wall) in list(state.pending_build.items()):
         pos = Pos(*cell)
         if view.action_ok(uid) is False or not _has_building(view, pos, is_wall):
             state.failed_build_cells.add(cell)
+            reason = "result_false" if view.action_ok(uid) is False else "no_building"
+            state.build_failures.append((cell[0], cell[1], reason))
             if is_wall:
                 state.wall_probes += 1
+                # 同距离累计 2 次失败 → 认定这一整圈都非法，把搜索推到外一圈
+                dist = min(chebyshev(pos, c) for c in base_cells) if base_cells else 0
+                if sum(1 for x, y, _ in state.build_failures
+                       if base_cells and min(chebyshev(Pos(x, y), c) for c in base_cells) == dist) >= 2:
+                    state.wall_refuted_dist.add(dist)
         elif is_wall:
             state.wall_confirmed = True  # 找到过合法墙位 → 放开施工
         state.pending_build.pop(uid, None)
