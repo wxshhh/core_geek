@@ -160,6 +160,7 @@ class EventCode(str, Enum):
     O_03 = "O-03"
 
     D_01 = "D-01"
+    D_02 = "D-02"
 
     M_01 = "M-01"
 
@@ -228,6 +229,9 @@ _SPECS: Final[dict[str, EventSpec]] = {
     EventCode.O_03.value: EventSpec(Tag.OPP, LogLevel.EVENT, "threat detected: possible base rush"),
     # D — 摘要
     EventCode.D_01.value: EventSpec(Tag.DIGEST, LogLevel.DIGEST, "day/match digest line"),
+    EventCode.D_02.value: EventSpec(
+        Tag.DIGEST, LogLevel.DIGEST, "per-round command trace + planner notes"
+    ),
     # M — 机器可读指标（方案 §4.2：每回合一行，供内部 LLM 直接归纳）
     EventCode.M_01.value: EventSpec(
         Tag.METRIC, LogLevel.DIGEST, "per-round machine-readable metric line"

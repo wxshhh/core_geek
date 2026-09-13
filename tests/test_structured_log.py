@@ -46,6 +46,7 @@ from future_war.observability.events import (  # noqa: E402
     Tag,
     describe,
 )
+from future_war.observability.round_metrics import RoundObserver  # noqa: E402
 from future_war.observability.structured_log import (  # noqa: E402
     Phase,
     StructuredLogger,
@@ -319,7 +320,7 @@ def test_registry_code_set_is_stable() -> None:
             "L-01", "L-02", "L-03", "L-04",
             "S-01", "S-02", "S-03", "S-04",
             "O-01", "O-02", "O-03",
-            "D-01",
+            "D-01", "D-02",
             "M-01",
             "X-01", "X-02", "X-03", "X-04", "X-05", "X-06", "X-99",
         }
@@ -542,6 +543,43 @@ def test_global_logger_configure_get_reset() -> None:
             fresh.close()  # type: ignore[name-defined]
     assert fresh is not configured  # type: ignore[name-defined]
 
+
+def test_stderr_echo_survives_unwritable_log_dir() -> None:
+    """Given 日志目录不可写（模拟真机沙盒），When emit，Then stderr 仍能看到该行。
+
+    真机上队友看不到 logs/ 目录，平台捕获的 stderr 是唯一通道；文件写不了时
+    更要把日志吐出来，所以「回显」必须与「文件健康」解耦。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        blocker = Path(tmp) / "blocker"
+        blocker.write_text("occupied", encoding="utf-8")  # 用文件占住目录名
+        logger = StructuredLogger(blocker, echo_stderr=True)
+        try:
+            assert not logger.healthy, "该路径不可能建目录，应已降级"
+            with redirect_stderr(io.StringIO()) as stderr:
+                logger.emit(EventCode.M_01, "metric", round_no=7, phase="D", gold=0)
+            assert "[METRIC] M-01 metric" in stderr.getvalue()
+            assert "gold=0" in stderr.getvalue()
+        finally:
+            logger.close()
+
+
+def test_round_observer_echoes_by_default() -> None:
+    """Given 默认配置，When RoundObserver 写回合日志，Then 事件行同时出现在 stderr。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        config = Config(
+            data={"log": {"level": "EVENT", "trace_enabled": False}},
+            profile="t",
+            commit="c",
+            config_hash="h",
+        )
+        observer = RoundObserver.from_config(config, log_dir=tmp, match_name="echo")
+        try:
+            with redirect_stderr(io.StringIO()) as stderr:
+                observer.observe(3, {"roundNo": 3, "teamOur": {"goldNum": 5}}, {})
+            assert "[METRIC] M-01" in stderr.getvalue()
+        finally:
+            observer.close()
 
 def main() -> int:
     """零依赖测试运行器：执行全部 test_* 函数并报告。"""

@@ -14,7 +14,7 @@ JsonValue: TypeAlias = (
 )
 
 DEFAULT_CONFIG: Final[dict[str, JsonValue]] = {
-    "log": {"level": "EVENT", "trace_enabled": False},
+    "log": {"level": "EVENT", "trace_enabled": False, "echo_stderr": True},
     "server": {"slow_round_ms": 3000},
     "build": {
         "order": ["weapons", "walls", "upgrades"],
@@ -25,7 +25,7 @@ DEFAULT_CONFIG: Final[dict[str, JsonValue]] = {
         "wall_labyrinth_depth": 3,
         "wall_max": 12,
         "wall_enabled": True,
-        "wall_probe_budget": 6,
+        "wall_probe_budget": 12,
     },
     "combat": {
         "target_priority": ["boss", "large", "medium", "small"],
@@ -33,6 +33,7 @@ DEFAULT_CONFIG: Final[dict[str, JsonValue]] = {
         "rocket_aoe_threshold": 3,
         "controller_pairing": "range_first",
         "attack_cooldown_turns": 3,
+        "staging_night_rounds": 25,
     },
     "consumables": {
         "medicine_hp_ratio": 0.5,
@@ -49,7 +50,7 @@ DEFAULT_CONFIG: Final[dict[str, JsonValue]] = {
             "wall_upgrade": 0.2,
         },
         "vendor_peak_window": 5,
-        "dusk_return": 40,
+        "dusk_return": 70,
     },
     "defense": {
         "boss_emergency_rounds": 2,

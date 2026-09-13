@@ -212,6 +212,30 @@ class JudgeRequestHandler(BaseHTTPRequestHandler):
             return
         round_no = _round_no_of(request)
         observer.observe(round_no if round_no is not None else 0, request, response)
+        self._trace(round_no if round_no is not None else 0, request, response)
+
+    def _trace(
+        self, round_no: int, request: dict[str, object], response: dict[str, object]
+    ) -> None:
+        """每回合一条 ``D-02``：规划器摘要 + 本回合指令 + 上回合执行结果。
+
+        真机上队友看不到 ``logs/`` 目录，平台捕获的 stderr 是唯一通道；这条行把
+        「这回合为什么没建东西 / 上回合那条建造到底成没成」压成一行，是排查
+        「一整天没建墙」这类问题的主要依据。
+        """
+        observer = getattr(self.server, "observer", None)
+        if observer is None:
+            return
+        notes = getattr(getattr(self.server, "bot", None), "last_notes", ())
+        message = " ".join(str(note) for note in notes) if notes else "-"
+        observer.emit(
+            EventCode.D_02,
+            message,
+            round_no=round_no,
+            phase=phase_of(round_no),
+            cmds=_command_summary(response.get("roleCommandMap")),
+            results=_result_summary(request.get("lastRoundRoleActionResults")),
+        )
 
     def _warn_if_slow(self, started: float, request: dict[str, object] | None) -> None:
         """回合耗时逼近 5s 响应预算 → 一条 X-04（任务书 §八）。
@@ -299,6 +323,47 @@ def _round_no_of(request: dict[str, object] | None) -> int | None:
     if not isinstance(round_no, int) or isinstance(round_no, bool):
         return None
     return round_no
+
+
+def _command_summary(commands: object) -> str:
+    """本回合指令摘要：``build:1,move:2`` + 建造目标 ``wall@(9,23)``。
+
+    建造目标要单独列出来 —— 「这回合到底往哪儿砌了墙」是排查建造问题的第一现场。
+    """
+    if not isinstance(commands, dict) or not commands:
+        return "none"
+    counts: dict[str, int] = {}
+    builds: list[str] = []
+    for command in commands.values():
+        if not isinstance(command, dict):
+            continue
+        action = command.get("action")
+        action = action if isinstance(action, str) else "?"
+        counts[action] = counts.get(action, 0) + 1
+        if action != "build":
+            continue
+        name = command.get("name")
+        name = name if isinstance(name, str) else "?"
+        targets = command.get("targetPos")
+        if isinstance(targets, list) and targets and isinstance(targets[0], dict):
+            pos = targets[0]
+            builds.append(f"{name}@({pos.get('x')},{pos.get('y')})")
+    text = ",".join(f"{key}:{counts[key]}" for key in sorted(counts))
+    return f"{text}+{'+'.join(builds)}" if builds else text
+
+
+def _result_summary(results: object) -> str:
+    """上回合 ``lastRoundRoleActionResults`` 摘要：``ok=1,fail=2``。
+
+    ``fail`` 基本等价于「那条建造/动作被判定非法」——把推断错的格子暴露在日志里。
+    """
+    if not isinstance(results, dict) or not results:
+        return "none"
+    ok = sum(1 for value in results.values() if value is True)
+    failed = sum(1 for value in results.values() if value is False)
+    other = len(results) - ok - failed
+    text = f"ok:{ok},fail:{failed}"
+    return f"{text},other:{other}" if other else text
 
 
 def resolve_port(port_arg: str | None) -> int:

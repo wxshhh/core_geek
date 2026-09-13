@@ -34,6 +34,9 @@ from future_war.config_defaults import DEFAULT_CONFIG, JsonValue
 
 ENV_PREFIX: Final = "FUTURE_WAR_"
 ENV_PROFILE: Final = "FUTURE_WAR_PROFILE"
+# 保留名：是工程自己的开关（不是配置键），不参与 `FUTURE_WAR_*` 覆盖，
+# 否则每回合都会多打一条 "does not match any config key" 的告警噪声。
+_RESERVED_ENV: Final = frozenset({ENV_PROFILE, "FUTURE_WAR_LOG_DIR"})
 DEFAULT_PROFILE_NAME: Final = "default"
 
 # profile 文件名允许的字符集（防御路径穿越，如 `../evil`）
@@ -148,7 +151,7 @@ def _set_nested(
 def _apply_env_overrides(config: dict[str, JsonValue]) -> dict[str, JsonValue]:
     """应用 FUTURE_WAR_* 环境变量覆盖（嵌套用 `__`，软嵌套见 _resolve_path）。"""
     for name in sorted(os.environ):
-        if not name.startswith(ENV_PREFIX) or name == ENV_PROFILE:
+        if not name.startswith(ENV_PREFIX) or name in _RESERVED_ENV:
             continue
         parts = name[len(ENV_PREFIX) :].lower().split("__")
         resolved = _resolve_path(config, parts)

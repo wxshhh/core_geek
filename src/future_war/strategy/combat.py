@@ -17,16 +17,30 @@ from future_war.models import Action, Pos, RobotRole, Role, RoleCommand, enum_to
 from future_war.core.nav import resolve_moves
 from future_war.core.world_map import chebyshev
 from future_war.core.world_view import WorldView
-from future_war.strategy.builder import assign_controllers
+from future_war.strategy.builder import (
+    assign_controllers,
+    shelter_cells,
+    staging_cell,
+)
 
-BASE_HOLD_RANGE: Final = 2
 _CONTROLLER_RANGE: Final = 1
+DAY_LENGTH: Final = 130  # 一整天 70 白天 + 60 夜晚（任务书 §4.2）
+DAY_ROUNDS: Final = 70
+# 夜晚前若干回合：无操控者的武器也要派人过去（而不是等敌人进射程才动身）。
+# 机器人从地图边缘走到基地需要十几回合，正好够角色跑到操控位。
+STAGING_NIGHT_ROUNDS: Final = 25
 
 
 def plan_defense(
     view: WorldView, config: Config | None = None
 ) -> dict[int, RoleCommand]:
-    """夜晚为武器分配操控者并攻击；白天返回空指令。"""
+    """夜晚为武器分配操控者并攻击；白天返回空指令。
+
+    夜晚前 ``combat.staging_night_rounds`` 回合内，**没有操控者的武器也会派人过去**
+    （白天不再提前 30 回合就位，见 ``economy.dusk_return``）。理由是用户实测：机器人
+    从刷出到摸到基地要走十几回合，这段时间足够角色从工地跑到操控位；把就位放在
+    白天等于白白停掉 30 个回合的施工。
+    """
     if not view.is_night():
         return {}
     commands: dict[int, RoleCommand] = {}
@@ -41,6 +55,7 @@ def plan_defense(
     # 但撤退优先级低于开火，所以已有操控者的武器不受影响。
     hurt = retreating_roles(view, config)
     healthy = [r for r in mobile if r.id not in hurt]
+    staging = _in_night_window(view, config)
     armed: list[tuple[Role, Role]] = []
     for weapon in weapons:
         if weapon.cooldown > 0:
@@ -53,7 +68,17 @@ def plan_defense(
             healthy, weapon.pos, _CONTROLLER_RANGE, assigned
         )
         if controller is None:
-            # 无操控者：只有射程内有敌人（或该武器本就是某角色的待命目标）才派人过去
+            # 无操控者：夜间前段无条件派人去操控位；过了窗口只在射程内已有敌人时才动身
+            target = assign_controllers(view, (weapon,)).get(weapon.id)
+            chosen = (
+                next((r for r in healthy if r.id == target and r.id not in assigned), None)
+                if staging and target is not None
+                else None
+            )
+            if chosen is not None:
+                goals[chosen.id] = staging_cell(view, weapon) or weapon.pos
+                assigned.add(chosen.id)
+                continue
             if not _in_range(robots, weapon):
                 continue
             free = _nearest_within(healthy, weapon.pos, None, assigned)
@@ -74,6 +99,15 @@ def plan_defense(
         if step is not None:
             commands[uid] = RoleCommand(action=Action.MOVE, targetPos=(step,))
     return commands
+
+
+def _in_night_window(view: WorldView, config: Config | None) -> bool:
+    """是否处于「夜晚前段」就位窗口（``combat.staging_night_rounds``）。"""
+    window = _int_flag(config, "combat.staging_night_rounds", STAGING_NIGHT_ROUNDS)
+    if window <= 0:
+        return False
+    night_round = (view.round_no - 1) % DAY_LENGTH - DAY_ROUNDS + 1
+    return night_round <= window
 
 
 def _pick_ready(
@@ -102,15 +136,19 @@ def _send_home(
     goals: dict[int, Pos],
     config: Config | None = None,
 ) -> None:
-    base = view.base_pos()
-    if base is None:
+    """未分配操控位的角色躲进「墙内」安全位（贴着基地、围墙之后的那一侧）。"""
+    shelters = shelter_cells(view)
+    if not shelters:
         return
+    inside = set(shelters)
     hurt = retreating_roles(view, config)
     for role in mobile:
         if role.id in assigned:
             continue
-        if role.id in hurt or chebyshev(role.pos, base) > BASE_HOLD_RANGE:
-            goals[role.id] = base
+        if role.id in hurt or role.pos not in inside:
+            target = min(shelters, key=lambda c: (chebyshev(role.pos, c), c.x, c.y))
+            if role.pos != target:
+                goals[role.id] = target
 
 
 def retreating_roles(view: WorldView, config: Config | None = None) -> frozenset[int]:
@@ -131,6 +169,11 @@ def retreating_roles(view: WorldView, config: Config | None = None) -> frozenset
 
 
 RETREAT_HP_RATIO: Final = 0.35
+
+
+def _int_flag(config: Config | None, key: str, default: int) -> int:
+    value = config.get(key) if config is not None else None
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
 
 
 def _ratio_flag(config: Config | None, key: str, default: float) -> float:

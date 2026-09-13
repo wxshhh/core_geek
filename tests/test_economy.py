@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_DIR) not in sys.path:
@@ -85,6 +85,19 @@ def _view(roles, *, zones=None, gold=0, round_no=1):
     return WorldModel().apply_round(parse_request(data))
 
 
+def _config(**sections: object) -> Config:
+    """测试用最小配置：只写要覆盖的键，未覆盖的走代码默认。"""
+    return Config(
+        data=dict(sections),  # type: ignore[arg-type]
+        profile="test",
+        commit="test",
+        config_hash="test",
+    )
+
+
+_NO_WALL: Final = _config(build={"wall_enabled": False})
+
+
 def _mine(x: int, y: int, kind: str = "stone") -> dict[str, Any]:
     return {"pos": _pos(x, y), "neutralType": kind}
 
@@ -118,7 +131,8 @@ def test_worker_sells_when_adjacent_to_vendor_with_ore() -> None:
     """Given 工人背包有矿石且在小贩旁，When 规划经济，Then 发出 sell（数量=矿石数）。"""
     worker = _role(10010, "worker", 5, 5, 220, backpack=["stone"] * 5)
     view = _view([STATION, worker], zones=[_vendor(6, 5)])
-    cmd = plan_economy(view)[10010]
+    # 关掉围墙：新策略下「有石头就先砌墙」优先于贩卖，这里只验证贩卖分支
+    cmd = plan_economy(view, _NO_WALL)[10010]
     assert enum_to_str(cmd.action) == "sell"
     assert cmd.name == "stone"
     assert cmd.num == 5
@@ -130,7 +144,7 @@ def test_worker_sells_stone_first_then_copper() -> None:
         10010, "worker", 5, 5, 220, backpack=["stone", "stone", "copper", "copper", "copper"]
     )
     view = _view([STATION, worker], zones=[_vendor(6, 5)])
-    cmd = plan_economy(view)[10010]
+    cmd = plan_economy(view, _NO_WALL)[10010]  # 同上：关围墙，只验证贩卖优先级
     assert cmd.name == "stone"
     assert cmd.num == 2
 
@@ -227,6 +241,83 @@ def test_workers_assigned_distinct_mines() -> None:
     assert len(set(assignment.values())) == 2
 
 
+def test_dusk_stages_roles_at_weapon_control_cells() -> None:
+    """Given 白天后段（第 40 回合起）且有武器，When 规划经济，Then 角色就位到操控位。
+
+    旧实现只把角色送回基地，而基地并不总是贴着武器，夜里前几回合只有 1 座武器
+    有操控者 —— 这是「第一晚被推平」的直接原因之一。
+    """
+    round_no = 41  # 白天第 41 回合（第 1 天，已过黄昏阈值）
+    weapon = Pos(22, 20)
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(10040, "rocket", 22, 20, 1000, level=1, attackPower=20, attackRange=10),
+        _role(10010, "worker", 23, 20, 220),  # 已在操控位
+        _role(10011, "pioneer", 26, 20, 200),  # 需要在黄昏赶回
+        _role(10012, "worker", 27, 20, 220),
+    ]
+    view = _view(roles, round_no=round_no)
+    assert view.is_day()
+    commands = plan_economy(view, _config(economy={"dusk_return": 40}))
+    # 每座武器都有操控者；远处的角色朝武器靠拢（而不是全部回基地放羊）
+    assignment = assign_controllers(view)
+    assert set(assignment) == {w.id for w in view.own_weapons()}
+    movers = [c for c in commands.values() if enum_to_str(c.action) == "move"]
+    assert movers
+    assert any(chebyshev(c.targetPos[0], weapon) <= 4 for c in movers)
+
+
+def test_default_dusk_return_does_not_stop_daytime_work() -> None:
+    """Given 默认配置（``economy.dusk_return=70``），When 白天后段，Then 不停工就位。
+
+    回归用户实测：阈值 40 会让白天最后 30 个回合全部停摆（只走去就位），
+    结果是「一整天一堵墙都没建起来」。默认值改为 70（白天结束）后，白天干满，
+    就位交给夜晚的 ``combat.plan_defense``。
+    """
+    round_no = 41
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(10040, "rocket", 22, 20, 1000, level=1, attackPower=20, attackRange=10),
+        _role(10010, "worker", 23, 20, 220),
+        _role(10011, "pioneer", 26, 20, 200),
+    ]
+    view = _view(roles, round_no=round_no)
+    assert view.is_day()
+    state = EconomyState()
+    plan_economy(view, None, state)
+    assert "staging=dusk" not in state.notes, f"默认配置不应进入黄昏就位：{state.notes}"
+
+
+def test_walls_start_on_day_one_without_waiting_for_three_weapons() -> None:
+    """Given 白天第 1 回合、手里有石头、还没有武器，When 规划经济，Then 直接去砌墙。
+
+    回归：旧实现要求「先建满 3 座武器」才准碰围墙，实机结果是一整天一堵墙都没
+    建起来（白天只有 70 回合，而建造仅白天可用）。
+    """
+    worker = _role(10010, "worker", 5, 5, 220, backpack=["stone", "stone"])
+    view = _view([STATION, worker], zones=[_vendor(6, 5)])
+    state = EconomyState()
+    plan_economy(view, None, state)
+    assert not any("wall:probe-denied" in note for note in state.notes), state.notes
+    assert any("wall" in note for note in state.notes), state.notes
+
+
+def test_builder_switches_to_walls_once_weapons_are_maxed() -> None:
+    """Given 武器已建满且建造者手里有石头，When 规划经济，Then 建造者也去铺墙。"""
+    weapon = _role(10040, "rocket", 22, 20, 1000, level=1, attackPower=20, attackRange=10)
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        weapon,
+        _role(10010, "worker", 21, 21, 220, backpack=["stone"]),
+    ]
+    view = _view(roles, gold=100)
+    commands = plan_economy(view)
+    actions = {enum_to_str(c.action) for c in commands.values()}
+    assert actions <= {"build", "move", "collect", "sell", "use"}, actions
+    assert "build" in actions or any(
+        enum_to_str(c.action) == "move" for c in commands.values()
+    )
+
 def main() -> int:
     """零依赖测试运行器：执行全部 test_* 函数并报告。"""
     test_funcs = [
@@ -249,29 +340,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-def test_dusk_stages_roles_at_weapon_control_cells() -> None:
-    """Given 白天后段（第 40 回合起）且有武器，When 规划经济，Then 角色就位到操控位。
-
-    旧实现只把角色送回基地，而基地并不总是贴着武器，夜里前几回合只有 1 座武器
-    有操控者 —— 这是「第一晚被推平」的直接原因之一。
-    """
-    round_no = 41  # 白天第 41 回合（第 1 天，已过黄昏阈值）
-    weapon = Pos(22, 20)
-    roles = [
-        _role(10013, "station", 20, 20, 1500, level=1),
-        _role(10040, "rocket", 22, 20, 1000, level=1, attackPower=20, attackRange=10),
-        _role(10010, "worker", 23, 20, 220),  # 已在操控位
-        _role(10011, "pioneer", 26, 20, 200),  # 需要在黄昏赶回
-        _role(10012, "worker", 27, 20, 220),
-    ]
-    view = _view(roles, round_no=round_no)
-    assert view.is_day()
-    commands = plan_economy(view)
-    # 每座武器都有操控者；远处的角色朝武器靠拢（而不是全部回基地放羊）
-    assignment = assign_controllers(view)
-    assert set(assignment) == {w.id for w in view.own_weapons()}
-    movers = [c for c in commands.values() if enum_to_str(c.action) == "move"]
-    assert movers
-    assert any(chebyshev(c.targetPos[0], weapon) <= 4 for c in movers)

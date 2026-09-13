@@ -19,6 +19,7 @@ from future_war.config import Config  # noqa: E402
 from future_war.models import Pos, enum_to_str, parse_request  # noqa: E402
 from future_war.core import WorldModel, chebyshev  # noqa: E402
 from future_war.strategy import plan_upgrades, preferred_weapon_cells, upgrade_order  # noqa: E402
+from future_war.strategy.builder import nearest_shelter, shelter_cells  # noqa: E402
 
 
 def _pos(x: int, y: int) -> dict[str, int]:
@@ -150,30 +151,6 @@ def test_plan_upgrades_respects_configured_order() -> None:
     assert cmd.name == "StationUpgradeVoucher1"
 
 
-def main() -> int:
-    """零依赖测试运行器：执行全部 test_* 函数并报告。"""
-    test_funcs = [
-        obj
-        for name, obj in sorted(globals().items())
-        if name.startswith("test_") and callable(obj)
-    ]
-    failed = 0
-    for test in test_funcs:
-        try:
-            test()
-        except Exception as exc:  # noqa: BROAD_EXCEPT_OK — 运行器顶层边界：收集失败并继续
-            failed += 1
-            print(f"FAIL {test.__name__}: {exc!r}", file=sys.stderr)
-        else:
-            print(f"PASS {test.__name__}")
-    print(f"{len(test_funcs) - failed}/{len(test_funcs)} passed")
-    return 1 if failed else 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-
-
 def test_wall_line_builds_three_sides_and_skips_back() -> None:
     """Given 来袭方向在基地右侧，When 规划围墙，Then 只建右/上/下三面且右侧优先。
 
@@ -214,3 +191,55 @@ def test_wall_line_covers_all_sides_without_direction() -> None:
     line = wall_line(view, None, None, None, None)
     assert any(c.x < base.x for c in line)
     assert any(c.x > base.x for c in line)
+
+
+# ------------------------------------------------------------------ 墙内安全位
+
+
+def test_shelter_cells_are_base_adjacent_and_free() -> None:
+    """Given 基地与周边建筑，When 取安全位，Then 都是紧贴基地块的空格。"""
+    roles = [
+        STATION,  # 基地左上角 (20,20) → 基地块 (20..21, 20..21)
+        _role(10040, "wall", 19, 19, 1000, level=1),  # 占据一个邻格
+    ]
+    view = _view(roles)
+    cells = shelter_cells(view)
+    assert cells, "应至少剩一个贴基地的空位"
+    block = tuple(view.base_cells())
+    for cell in cells:
+        assert min(chebyshev(cell, c) for c in block) == 1, f"{cell} 不是紧贴基地块的空格"
+        assert cell != Pos(19, 19), "已被围墙占据的格不能是安全位"
+    assert list(cells) == sorted(cells, key=lambda c: (c.x, c.y))
+
+
+def test_nearest_shelter_picks_closest_and_falls_back_to_base() -> None:
+    """Given 有/无安全位，When 取最近安全位，Then 就近选择、无位时退回基地。"""
+    view = _view([STATION])
+    near = nearest_shelter(view, Pos(30, 30))
+    assert near is not None
+    assert near in shelter_cells(view)
+    empty = _view([_role(10013, "station", 0, 0, 1500, level=1)])
+    assert nearest_shelter(empty, Pos(5, 5)) is not None  # 仍有贴基地的空位
+
+def main() -> int:
+    """零依赖测试运行器：执行全部 test_* 函数并报告。"""
+    test_funcs = [
+        obj
+        for name, obj in sorted(globals().items())
+        if name.startswith("test_") and callable(obj)
+    ]
+    failed = 0
+    for test in test_funcs:
+        try:
+            test()
+        except Exception as exc:  # noqa: BROAD_EXCEPT_OK — 运行器顶层边界：收集失败并继续
+            failed += 1
+            print(f"FAIL {test.__name__}: {exc!r}", file=sys.stderr)
+        else:
+            print(f"PASS {test.__name__}")
+    print(f"{len(test_funcs) - failed}/{len(test_funcs)} passed")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

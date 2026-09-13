@@ -32,6 +32,7 @@ from future_war.strategy.builder import (
     assign_controllers,
     base_center,
     preferred_weapon_cells,
+    shelter_cells,
     staging_cell,
     standable_cells,
     wall_line,
@@ -42,9 +43,12 @@ WALL_COST: Final = 1
 VOUCHER_COST: Final = 100
 VOUCHER: Final = "WeaponUpgradeVoucher1"
 SELL_THRESHOLD: Final = 5
-DUSK_RETURN: Final = 40
+DUSK_RETURN: Final = 70  # 70 = 白天不提前就位（交给夜晚回位）
 DAY_LENGTH: Final = 130
 WALL_MAX: Final = 12
+# 与 config 默认值保持一致：config=None 时（测试/模拟器直连）也走同一套参数
+WALL_PROBE_BUDGET: Final = 12
+MAX_WEAPONS: Final = 3
 _WEAPON_ORDER: Final = ("rocket", "railgun", "gatling")
 _DEFAULT_PLAN: Final = ("rocket", "railgun", "railgun")
 _MINE_KINDS: Final = frozenset({"stone", "iron", "copper"})
@@ -63,6 +67,7 @@ class EconomyState:
     wall_probe_day: int = 0
     wall_confirmed: bool = False  # 是否已确认过一处合法围墙位
     wall_dir: tuple[int, int] | None = None  # 来袭方向（首次判定后锁定）
+    notes: list[str] = field(default_factory=list)  # 本回合决策摘要（每回合重置，供日志）
 
 
 def plan_economy(
@@ -70,13 +75,16 @@ def plan_economy(
 ) -> dict[int, RoleCommand]:
     """为所有工人产出本回合经济指令（建造/采集/贩卖/升级 + 移动）。"""
     state = state if state is not None else EconomyState()
+    state.notes = []
     _digest_feedback(view, state)
+    _roll_probe_day(view, state)
     if not view.is_day():
         return {}
-    max_weapons = _int_config(config, "build.day1_max_weapons", 3)
+    max_weapons = _int_config(config, "build.day1_max_weapons", MAX_WEAPONS)
     workers = list(view.own_workers())
     if _staging(view, config):
         state.builder_id = None
+        state.notes.append("staging=dusk")
         return _plan_staging(view)
     if state.builder_id is not None and state.builder_id not in {w.id for w in workers}:
         state.builder_id = None
@@ -102,7 +110,77 @@ def plan_economy(
         if step is not None:
             commands[uid] = RoleCommand(action=Action.MOVE, targetPos=(step,))
     _record_build_attempts(commands, state)
+    state.notes.extend(
+        _diagnose(view, config, state, workers, orders, max_weapons, commands)
+    )
     return commands
+
+
+def _diagnose(
+    view: WorldView,
+    config: Config | None,
+    state: EconomyState,
+    workers: list[Role],
+    orders: dict[int, str],
+    max_weapons: int,
+    commands: dict[int, RoleCommand],
+) -> list[str]:
+    """本回合「为什么建/没建」的一句话摘要（真机只能看控制台，必须自解释）。
+
+    每回合最多几条短语，直接进 ``D-02`` 行；不含搜索，只读当前快照 + 状态，
+    因此可以放心每回合调用。
+    """
+    weapons = len(view.own_weapons())
+    walls = len(view.own_walls())
+    stone = sum(w.backpack.count("stone") for w in workers)
+    notes = [
+        f"gold={view.gold()}",
+        f"weapons={weapons}/{max_weapons}",
+        f"walls={walls}/{_wall_target(view, state)}",
+        f"stone={stone}",
+        f"probes={state.wall_probes}",
+    ]
+    blocked: list[str] = []
+    if weapons < max_weapons:
+        if view.gold() < WEAPON_COST:
+            blocked.append("weapon:gold")
+        elif not _weapon_cells_free(view, state):
+            blocked.append("weapon:no-cell")
+    if _flag(config, "build.wall_enabled", True) and walls < _wall_target(view, state):
+        if not _wall_ready(view, state, config):  # 已只读（跨天重置在 _roll_probe_day）
+            blocked.append("wall:probe-denied")
+        elif stone < WALL_COST:
+            blocked.append("wall:no-stone")
+        elif not _wall_line_free(view, state):
+            blocked.append("wall:line-empty")
+    if blocked:
+        notes.append("blocked=" + ",".join(blocked))
+    orders_text = ",".join(f"{uid}:{orders[uid]}" for uid in sorted(orders))
+    notes.append(f"orders={orders_text}")
+    builds = [
+        f"{cmd.name}@({cmd.targetPos[0].x},{cmd.targetPos[0].y})"
+        for cmd in commands.values()
+        if cmd.name and cmd.targetPos
+    ]
+    notes.append("issued=" + ("+".join(builds) if builds else "none"))
+    return notes
+
+
+def _weapon_cells_free(view: WorldView, state: EconomyState) -> bool:
+    """蓝区里是否还剩「工人站得进去且没失败过」的候选格（空 → 不可能再建武器）。"""
+    free = frozenset(c for c in view.blue_build_cells() if not _occupied(view, c))
+    return bool(_free_cells(standable_cells(view, free), state.failed_build_cells))
+
+
+def _wall_line_free(view: WorldView, state: EconomyState) -> bool:
+    """围墙防线里是否还剩可施工的格（空 → 不可能再建墙）。"""
+    return any(
+        not _occupied(view, c)
+        for c in wall_line(
+            view, None, None, _occupied_and_failed(view, state.failed_build_cells),
+            _threat_dir(view, state),
+        )
+    )
 
 
 def _record_build_attempts(
@@ -151,26 +229,33 @@ def _work_orders(
     return orders
 
 
+def _roll_probe_day(view: WorldView, state: EconomyState) -> None:
+    """跨天重置探路额度（每天开工前调用一次，避免只读的判定函数带副作用）。"""
+    if state.wall_probe_day != view.day:
+        state.wall_probe_day = view.day
+        state.wall_probes = 0  # 不重置的话，用完一次就永久放弃围墙
+
+
 def _wall_ready(view: WorldView, state: EconomyState, config: Config | None) -> bool:
     """是否准许动用石头修墙。
 
     可建造区是**推断**出来的，开局我们并不知道黄区在哪；盲目让工人拿着宝贵的
-    石头去撞非法的格子，会把第 1 天全部烧光、连一座武器都建不齐。因此：
-    已经确认过合法墙位 → 正常施工；否则只在「武器已满 + 还没有围墙」时放行
-    有限次探路（默认 3 次），探明后即转为常规铺设。
+    石头去撞非法的格子，会把第 1 天全部烧光。因此：已经确认过合法墙位 → 正常
+    施工；否则只放行「每天有限次」的探路（``build.wall_probe_budget``，默认 6），
+    探明后即转为常规铺设。
+
+    旧实现还额外要求「先建满 3 座武器才准碰墙」，实机结果是**一整天一堵墙都没
+    建起来**：白天只有 70 回合，建造者要来回走、武器又可能因为推断错误卡住，等
+    到条件满足时天已经黑了（而建造仅白天可用）。围墙只要 1 石头、却是把机器人
+    挡在墙外挨打的唯一手段，因此改成**与武器并行推进**，代价由每日探路额度兜住。
     """
     if not _flag(config, "build.wall_enabled", True):
         return False
     if len(view.own_walls()) >= _wall_target(view, state):
         return False
-    if state.wall_probe_day != view.day:
-        state.wall_probe_day = view.day
-        state.wall_probes = 0  # 探路额度**每天**重置，否则用完一次就永久放弃围墙
     if state.wall_confirmed:
         return True
-    if len(view.own_weapons()) < _int_config(config, "build.day1_max_weapons", 3):
-        return False
-    return state.wall_probes < _int_config(config, "build.wall_probe_budget", 6)
+    return state.wall_probes < _int_config(config, "build.wall_probe_budget", WALL_PROBE_BUDGET)
 
 
 def _flag(config: Config | None, key: str, default: bool) -> bool:
@@ -229,7 +314,8 @@ def _plan_worker(
         plan = _plan_build_weapon(view, config, worker, max_weapons, state.failed_build_cells)
         if plan is not None:
             return plan
-    elif order in ("econ", "shop") and _wall_ready(view, state, config):
+        # 武器建满 / 金币不足 / 无可用格 → 建造者转去铺墙，别闲着
+    if order in ("build", "econ", "shop") and _wall_ready(view, state, config):
         plan = _plan_build_wall(view, config, worker, state)
         if plan is not None:
             return plan
@@ -249,11 +335,15 @@ def _needs_stone(
     view: WorldView, state: EconomyState, config: Config | None, order: str
 ) -> bool:
     """当前是否真的缺石头（缺 → 优先采石；不缺 → 专心挖铜铁换钱）。"""
-    if order not in ("econ", "shop") or not _flag(config, "build.wall_enabled", True):
+    if not _flag(config, "build.wall_enabled", True):
         return False
-    if len(view.own_walls()) >= _wall_target(view, state):
+    if order not in ("build", "econ", "shop"):
         return False
-    return True
+    if order == "build" and len(view.own_weapons()) < _int_config(
+        config, "build.day1_max_weapons", 3
+    ):
+        return False  # 建造者手上还有武器要建 → 先专心攒金币，别去挖石头
+    return len(view.own_walls()) < _wall_target(view, state)
 
 
 def _preferred_mine(
@@ -446,14 +536,15 @@ def _hurt_ids(view: WorldView) -> frozenset[int]:
 def _send_home(
     view: WorldView, mobile: list[Role], goals: dict[int, Pos]
 ) -> dict[int, RoleCommand]:
-    """未分配操控位的角色撤回基地附近（≤2 格内原地待命）。"""
-    base = view.base_pos()
-    if base is not None:
+    """未分配操控位的角色躲进「墙内」安全位（贴着基地、围墙之后的那一侧）。"""
+    shelters = shelter_cells(view)
+    if shelters:
         for role in mobile:
-            if role.id in goals:
+            if role.id in goals or role.pos in set(shelters):
                 continue
-            if chebyshev(role.pos, base) > 2:
-                goals[role.id] = base
+            target = min(shelters, key=lambda c: (chebyshev(role.pos, c), c.x, c.y))
+            if role.pos != target:
+                goals[role.id] = target
     commands: dict[int, RoleCommand] = {}
     for uid, step in resolve_moves(view, goals).items():
         if step is not None:

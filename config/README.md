@@ -73,6 +73,7 @@
 | --- | --- | --- | --- |
 | `log.level` | string | `"EVENT"` | 结构化日志级别：`DIGEST` / `EVENT` / `DECISION` / `TRACE` |
 | `log.trace_enabled` | bool | `false` | TRACE 明细行开关 |
+| `log.echo_stderr` | bool | `true` | 把事件流镜像到 stderr。**真机上拿不到 `logs/` 目录，平台捕获的 stderr 是唯一可见通道**，所以默认开；回显与文件写健康无关（日志文件写不了也照常回显） |
 
 ### server — HTTP 服务与超时留证（任务书 §八；事件码 `X-04`）
 
@@ -101,7 +102,7 @@
 | `build.wall_labyrinth_depth` | int | `3` | 围墙浅迷宫深度（拖延而非整圈，方案 §3.2） |
 | `build.wall_max` | int | `12` | 本局围墙目标数上限（只建基地最内圈，避免围死自己） |
 | `build.wall_enabled` | bool | `true` | 围墙总开关；关闭即退回「纯武器防线」基线 |
-| `build.wall_probe_budget` | int | `6` | 每天允许的「探路」建造次数：可建造区是推断的，先用有限次试错探明真区域 |
+| `build.wall_probe_budget` | int | `12` | 每天允许的「探路」失败次数：可建造区是推断的，先用有限次试错探明真区域。本地模拟器 3 个种子实测第 1 天建成的墙数：`6` → 0/0/3，`12` → 3/0/3，`24` → 3/6/3。石头够就调大 |
 
 ### combat — 战斗（方案 §3.3/§4.4）
 
@@ -112,6 +113,7 @@
 | `combat.rocket_aoe_threshold` | int | `3` | 火箭 AoE 开火的集群规模阈值 |
 | `combat.controller_pairing` | string | `"range_first"` | 操控者↔武器配对策略（§4.4 C-01/C-02 相关旋钮） |
 | `combat.attack_cooldown_turns` | int | `3` | 火箭冷却回合数（任务书 §4.5.1） |
+| `combat.staging_night_rounds` | int | `25` | 夜晚前几个回合内，无操控者的武器也会派人过去（机器人从刷出到摸到基地要走十几回合）。设 0 关闭 |
 
 ### economy — 经济（方案 §3.1）
 
@@ -121,7 +123,7 @@
 | `economy.emergency_reserve` | int | `100` | 应急金币保留（范围炸弹/眩晕法宝应对 BOSS 夜） |
 | `economy.budget_ratios` | object | `{weapon_upgrade:0.5, base_upgrade:0.3, wall_upgrade:0.2}` | 金币预算分配比（和为 1） |
 | `economy.vendor_peak_window` | int | `5` | 价格峰值判定窗口（回合数） |
-| `economy.dusk_return` | int | `40` | 白天第几回合起停止施工、转入**黄昏就位**（把角色送到武器操控位） |
+| `economy.dusk_return` | int | `70` | 白天第几回合起停止施工、转入黄昏就位。**默认 70 = 白天结束时**，即白天干满、就位交给夜晚（`combat.staging_night_rounds`）。设成 40 会白丢后面 30 个白天回合 |
 
 ### consumables — 消耗品（任务书 §4.6.3）
 

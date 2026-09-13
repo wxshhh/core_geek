@@ -3,13 +3,22 @@
 版本统一在仓库根 ``VERSION`` 文件管理（单一真源）；也可用参数覆盖。
 **Windows / macOS / Linux 通用**（仅标准库，不依赖 rsync/shasum/bash）。
 
+归档结构（默认）：**整个项目连同顶层目录 ``CoreGeek/`` 一起打包**，平台解压后
+得到 ``CoreGeek/main3.py``、``CoreGeek/src/...``：:
+
+    CoreGeek/
+      main3.py  run.sh  run.py  run.bat  VERSION  BUILD_INFO.txt
+      src/  config/  docs/  scripts/  tests/
+
 用法::
 
-    python scripts/package.py            # 用 VERSION 文件的版本
-    python scripts/package.py 0.2.0      # 临时覆盖版本
+    python scripts/package.py                 # 用 VERSION 文件的版本，顶层目录 CoreGeek/
+    python scripts/package.py 0.2.0           # 临时覆盖版本
+    python scripts/package.py --prefix MyDir  # 换一个顶层目录名
+    python scripts/package.py --flat          # 不要顶层目录（文件直接在归档根）
 
 产物：``dist/future-war-bot-<version>.tar.gz`` + 同名 ``.sha256`` 校验文件；
-包内含 ``BUILD_INFO.txt``（version/commit/built）。
+包内含 ``CoreGeek/BUILD_INFO.txt``（version/commit/built）。
 """
 
 from __future__ import annotations
@@ -25,6 +34,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION_FILE = ROOT / "VERSION"
+# 归档内的顶层目录名：平台按「项目目录」提交，所以默认连同目录一起打包。
+# 传空串（--flat）可退回「文件直接在归档根」的旧行为。
+DEFAULT_PREFIX = "CoreGeek"
 
 _EXCLUDE_DIR_NAMES = {
     ".git",
@@ -97,13 +109,13 @@ def _iter_files():
 def build_archive(version: str, prefix: str | None = None) -> Path:
     """生成 tar.gz 并返回路径。
 
-    ``prefix``：归档内的顶层目录名。**默认空（平铺）**——整个项目文件（含
-    ``main3.py``）都在归档根目录，平台解压后能直接找到 ``main3.py``。
-    传非空名则套一层目录（``--prefix <name>``）。
+    ``prefix``：归档内的顶层目录名，**缺省 ``CoreGeek``**——整个项目连同该目录
+    一起打包（解压后是 ``CoreGeek/main3.py``）。传空串 ``""`` 则平铺到归档根
+    （``--flat``，给「要求 main3.py 直接在根目录」的平台用）。
     """
     name = f"future-war-bot-{version}"
     if prefix is None:
-        prefix = ""
+        prefix = DEFAULT_PREFIX
     dist = ROOT / "dist"
     dist.mkdir(exist_ok=True)
     archive = dist / f"{name}.tar.gz"
@@ -118,6 +130,13 @@ def build_archive(version: str, prefix: str | None = None) -> Path:
         return f"{prefix}/{rel}" if prefix else rel
 
     with tarfile.open(archive, "w:gz") as tar:
+        if prefix:
+            # 显式写入顶层目录条目：解压工具不必依赖「自动补父目录」
+            dir_info = tarfile.TarInfo(prefix)
+            dir_info.type = tarfile.DIRTYPE
+            dir_info.mode = 0o755
+            dir_info.mtime = int(datetime.now(timezone.utc).timestamp())
+            tar.addfile(dir_info)
         for rel in _iter_files():
             tar.add(ROOT / rel, arcname=arc(rel.as_posix()))
         info = tarfile.TarInfo(arc("BUILD_INFO.txt"))
@@ -132,7 +151,10 @@ def build_archive(version: str, prefix: str | None = None) -> Path:
 
 
 def _parse_args(args: list[str]) -> tuple[str, str | None]:
-    """解析命令行：位置参数为版本，``--flat`` 平铺，``--prefix <name>`` 指定顶层目录。"""
+    """解析命令行：位置参数为版本，``--prefix <name>`` 指定顶层目录，``--flat`` 平铺。
+
+    不给参数时顶层目录为 ``DEFAULT_PREFIX``（CoreGeek）。
+    """
     prefix: str | None = None
     positional: list[str] = []
     index = 0
@@ -163,6 +185,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  版本：  {version} (源：{VERSION_FILE.name})")
     print(f"  提交：  {git_commit()}")
     print(f"  压缩包：{archive}")
+    root = DEFAULT_PREFIX if prefix is None else prefix
+    print(f"  归档根：{root + '/' if root else '（平铺，无顶层目录）'}")
     print(f"  大小：  {size_kb:.0f} KB")
     print(f"  校验：  {archive}.sha256")
     return 0

@@ -279,6 +279,40 @@ def staging_cell(view: WorldView, weapon: Role) -> Pos | None:
     return view.base_pos()
 
 
+def shelter_cells(view: WorldView) -> tuple[Pos, ...]:
+    """「墙内」待命格：紧贴基地块（切比雪夫距离 1）的可站立空格。
+
+    围墙按来袭面铺成 U 形后，贴着基地的**另一侧**空格就是墙内的安全位：机器人
+    得先拆墙才能碰到躲在里面的角色，武器则在墙后继续输出。夜晚不操控武器的角色
+    躲进来，比现在「退回基地左上角」更明确 —— 后者可能让角色停在面向机器人的
+    那一侧，正好站在墙外挨打。
+
+    距离 1 环内已被围墙/单位占据的格自动排除，所以围墙越铺越满时安全位会自然
+    收敛到剩下开口的一侧。返回按 (x, y) 稳定排序。
+    """
+    base_cells = _base_cells_of(view)
+    if not base_cells:
+        return ()
+    blocked = view.obstacles()
+    ring: set[Pos] = set()
+    for cell in base_cells:
+        for dx, dy in _ADJACENT:
+            nxt = Pos(cell.x + dx, cell.y + dy)
+            if not view.in_bounds(nxt) or nxt in blocked:
+                continue
+            if _base_distance(nxt, base_cells) == 1:
+                ring.add(nxt)
+    return tuple(sorted(ring, key=lambda c: (c.x, c.y)))
+
+
+def nearest_shelter(view: WorldView, origin: Pos) -> Pos | None:
+    """离 ``origin`` 最近的安全位；没有安全位时退回基地左上角。"""
+    shelters = shelter_cells(view)
+    if not shelters:
+        return view.base_pos()
+    return min(shelters, key=lambda c: (chebyshev(origin, c), c.x, c.y))
+
+
 def assign_controllers(
     view: WorldView, weapons: tuple[Role, ...] | None = None
 ) -> dict[int, int]:

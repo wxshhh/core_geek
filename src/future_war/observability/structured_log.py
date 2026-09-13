@@ -250,27 +250,28 @@ class StructuredLogger:
         return spec.level.rank <= self._cap.rank
 
     def _write(self, line: str) -> bool:
-        if not self._healthy or self._file is None:
-            return False
-        with self._lock:
-            if not self._healthy or self._file is None:
-                return False
-            try:
-                self._file.write(line + "\n")
-                self._pending += 1
-                if self._flush_every is not None and self._pending >= self._flush_every:
-                    self._file.flush()
-                    self._pending = 0
-                self._written += 1
-            except (OSError, ValueError) as exc:
-                self._mark_broken(f"structured log dropped (write failed): {exc}")
-                return False
+        written = False
+        if self._healthy and self._file is not None:
+            with self._lock:
+                if self._healthy and self._file is not None:
+                    try:
+                        self._file.write(line + "\n")
+                        self._pending += 1
+                        if self._flush_every is not None and self._pending >= self._flush_every:
+                            self._file.flush()
+                            self._pending = 0
+                        self._written += 1
+                        written = True
+                    except (OSError, ValueError) as exc:
+                        self._mark_broken(f"structured log dropped (write failed): {exc}")
+        # 回显与文件健康**解耦**：真机上队友看不到 logs/ 目录，stderr 是唯一通道，
+        # 文件写不了（只读盘/沙盒）时更要保证控制台还能看到日志。
         if self._echo_stderr:
             try:
-                print(line, file=sys.stderr)
-            except OSError:
+                print(line, file=sys.stderr, flush=True)
+            except (OSError, ValueError):
                 pass
-        return True
+        return written
 
     def _mark_broken(self, message: str) -> None:
         self._healthy = False

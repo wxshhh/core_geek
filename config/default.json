@@ -1,7 +1,8 @@
 {
   "log": {
     "level": "EVENT",
-    "trace_enabled": false
+    "trace_enabled": false,
+    "echo_stderr": true
   },
   "server": {
     "slow_round_ms": 3000
@@ -29,7 +30,7 @@
     "wall_labyrinth_depth": 3,
     "wall_max": 12,
     "wall_enabled": true,
-    "wall_probe_budget": 6
+    "wall_probe_budget": 12
   },
   "combat": {
     "target_priority": [
@@ -41,7 +42,8 @@
     "overkill_avoidance": true,
     "rocket_aoe_threshold": 3,
     "controller_pairing": "range_first",
-    "attack_cooldown_turns": 3
+    "attack_cooldown_turns": 3,
+    "staging_night_rounds": 25
   },
   "consumables": {
     "medicine_hp_ratio": 0.5,
@@ -58,7 +60,7 @@
       "wall_upgrade": 0.2
     },
     "vendor_peak_window": 5,
-    "dusk_return": 40
+    "dusk_return": 70
   },
   "defense": {
     "boss_emergency_rounds": 2,

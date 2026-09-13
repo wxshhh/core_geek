@@ -333,7 +333,9 @@ def test_server_startup_prints_version_stamp() -> None:
                 proc.kill()
                 proc.wait(timeout=5)
     lines = content.splitlines()
-    stamp_lines = [line for line in lines if "stamp" in line]
+    # 只数工程自己那行 `[future-war] stamp ...`；log.echo_stderr 默认开启后，
+    # 结构化日志的 I-01 行（也含 "stamp" 字样）会一并出现在 stderr 上。
+    stamp_lines = [line for line in lines if line.startswith("[future-war] stamp")]
     assert len(stamp_lines) == 1
     assert STAMP_RE.search(stamp_lines[0])
     assert lines.index(stamp_lines[0]) < lines.index(

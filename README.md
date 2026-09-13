@@ -78,8 +78,11 @@ server.py ── StrategyBot ── planner.plan_turn（昼夜编排）
 ## 工作流（内网 → 一句话反馈）
 
 1. 内网 `git pull` → `bash run.sh <port>` → 平台跑对局。
-2. 读日志：每回合一行 `[METRIC] M-01 ...`；事件按 `[TAG] CODE` 可 grep
-   （`logs/` 下，JSONL 为回放事实源）。
+2. 读日志：每回合两行 —— `[METRIC] M-01`（金币/血量/存活）与 `[DIGEST] D-02`
+   （建造摘要 + 本回合指令 + 上回合执行结果）；事件按 `[TAG] CODE` 可 grep。
+   日志同时在 `logs/` 下（JSONL 为回放事实源）**和 stderr**（`log.echo_stderr`
+   默认开）。平台不给你看 `logs/` 目录时，直接看平台日志里的 `[METRIC]` /
+   `[DIGEST]` 行即可。
 3. 按 `docs/诊断字典.md` 模板发开发者一句话，如
    `版本=<commit> 第3天夜 基地掉到400 证据=[COMBAT]C-05×12`。
 4. 开发者按「现象→模块→事件码→参数」定位并修改。
@@ -97,16 +100,25 @@ python3 scripts/run_sim.py --seed 42 --challenger http:http://127.0.0.1:18080 --
 Python 脚本（仅标准库，Windows/macOS/Linux 通用）：
 
 ```bash
-python scripts/package.py            # 默认平铺：main3.py 等直接位于归档根
-python scripts/package.py 0.2.0      # 临时覆盖版本
-python scripts/package.py --prefix mydir   # 套一层目录（若平台需要）
+python scripts/package.py                  # 默认：整个项目连同顶层目录 CoreGeek/ 一起打包
+python scripts/package.py 0.2.0            # 临时覆盖版本
+python scripts/package.py --prefix MyDir   # 换一个顶层目录名
+python scripts/package.py --flat           # 不要顶层目录（main3.py 直接在归档根）
+```
+
+归档结构（默认 `CoreGeek/`）：
+
+```
+CoreGeek/
+  main3.py  run.sh  run.py  run.bat  VERSION  BUILD_INFO.txt
+  src/  config/  docs/  scripts/  tests/
 ```
 
 - **Windows**：`python scripts\package.py`
 - **macOS / Linux**：`python scripts/package.py`（或便捷入口 `bash scripts/package.sh`）
 
 产物：`dist/future-war-bot-<version>.tar.gz` + `.sha256` 校验文件；包内含
-`BUILD_INFO.txt`（version/commit/built），并自动排除 `.git/`、`__pycache__/`、
+`CoreGeek/BUILD_INFO.txt`（version/commit/built），并自动排除 `.git/`、`__pycache__/`、
 `logs/`、`.venv/`、`.omo/evidence/` 等开发产物。
 
 ## 目录

@@ -86,13 +86,18 @@ class RoundObserver:
         log_dir: str | None = None,
         match_name: str | None = None,
     ) -> RoundObserver:
-        """按 Config 构造：读 features.replay_enabled / features.metric_line_enabled。"""
+        """按 Config 构造：读 features.replay_enabled / features.metric_line_enabled。
+
+        另读 ``log.echo_stderr``（默认 **true**）：真机上拿不到 ``logs/`` 目录，
+        平台捕获的 stdout/stderr 是唯一可见通道，所以默认把事件流镜像到 stderr。
+        """
         replay_enabled = _flag(config.get("features.replay_enabled", True), default=True)
         metric_enabled = _flag(
             config.get("features.metric_line_enabled", True), default=True
         )
+        echo_stderr = _flag(config.get("log.echo_stderr", True), default=True)
         structured = StructuredLogger.from_config(
-            config, log_dir=log_dir, match_name=match_name
+            config, log_dir=log_dir, match_name=match_name, echo_stderr=echo_stderr
         )
         round_logger = (
             RoundLogger(log_dir, match_name=match_name) if replay_enabled else None

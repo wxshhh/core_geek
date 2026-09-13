@@ -32,6 +32,7 @@ class StrategyBot:
         self._offense = OffenseState()
         self._consumables = ConsumableState()
         self._llm = LLMManager.from_config(config)
+        self.last_notes: tuple[str, ...] = ()  # 上回合决策摘要（供 server 记 D-02）
 
     def __call__(self, request: Request) -> Response:
         view = self._model.apply_round(request)
@@ -46,6 +47,7 @@ class StrategyBot:
             self._offense,
             self._consumables,
         )
+        self.last_notes = plan.notes
         prompt = plan.prompt
         if prompt and not self._llm.note_sent(prompt, view):
             prompt = ""  # 配额不足则不发送（避免 errorCode 5，§1.7）

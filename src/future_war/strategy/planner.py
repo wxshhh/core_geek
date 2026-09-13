@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from future_war.config import Config
-from future_war.models import RoleCommand
+from future_war.models import RoleCommand, enum_to_str
 from future_war.core.world_view import WorldView
 from future_war.strategy.builder import plan_upgrades
 from future_war.strategy.combat import plan_defense
@@ -28,6 +28,7 @@ class TurnPlan:
     commands: dict[int, RoleCommand] = field(default_factory=dict)
     prompt: str = ""
     execute_cmd: str = ""
+    notes: tuple[str, ...] = ()  # 决策摘要（供日志 D-02；不进协议响应）
 
 
 def plan_turn(
@@ -50,14 +51,31 @@ def plan_turn(
         commands.update(
             plan_offense(view, config, frozenset(commands), offense_state)
         )
-        return TurnPlan(commands=commands)
+        attacks = sum(
+            1 for c in commands.values() if enum_to_str(c.action) == "attack"
+        )
+        return TurnPlan(
+            commands=commands,
+            notes=(f"night weapons={len(view.own_weapons())} attacks={attacks}",),
+        )
     commands = plan_economy(view, config, economy_state)
+    notes: list[str] = list(economy_state.notes) if economy_state is not None else []
     for uid, command in plan_consumables(view, config, consumable_state).items():
         commands.setdefault(uid, command)  # 经济指令优先：不能为了喝药停下建造
     for uid, command in plan_upgrades(view, config).items():
         commands.setdefault(uid, command)
     task = plan_task(view, config, task_state)
     commands.update(task.commands)
+    if task.commands:
+        notes.append(f"task={len(task.commands)}")
     if not task.commands:
-        commands.update(plan_treasure(view, config, treasure_state))
-    return TurnPlan(commands=commands, prompt=task.prompt, execute_cmd=task.execute_cmd)
+        treasure = plan_treasure(view, config, treasure_state)
+        commands.update(treasure)
+        if treasure:
+            notes.append(f"treasure={len(treasure)}")
+    return TurnPlan(
+        commands=commands,
+        prompt=task.prompt,
+        execute_cmd=task.execute_cmd,
+        notes=tuple(notes),
+    )

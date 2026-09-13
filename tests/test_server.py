@@ -34,6 +34,8 @@ from future_war.server import (
     EMPTY_RESPONSE,
     JudgeRequestHandler,
     SLOW_ROUND_MS_DEFAULT,
+    _command_summary,
+    _result_summary,
     create_server,
     resolve_port,
     resolve_slow_round_ms,
@@ -346,6 +348,70 @@ def test_resolve_port_rejects_non_integer() -> None:
         return
     raise AssertionError("resolve_port('abc') 未抛出 ValueError")
 
+
+# ---------------------------------------------------------------- D-02 指令追踪
+
+
+def test_round_emits_d02_trace_with_commands_and_results() -> None:
+    """Given 一个回合，When POST，Then stderr/日志里有 D-02：规划摘要 + 指令 + 上回合结果。"""
+    body = json.dumps(
+        {
+            "roundNo": 12,
+            "mapInfo": {"width": 41, "height": 32, "zones": []},
+            "teamOur": {
+                "type": "challenger",
+                "teamId": "t",
+                "teamName": "t",
+                "goldNum": 30,
+                "totalScore": 0,
+                "roles": [
+                    {"id": 10013, "pos": {"x": 20, "y": 20}, "roleType": "station", "health": 1500},
+                    {"id": 10010, "pos": {"x": 5, "y": 5}, "roleType": "worker", "health": 220},
+                ],
+            },
+            "teamEnemy": {"roles": []},
+            "robot": {"roles": []},
+            "phaseTask": "",
+            "lastRoundRoleActionResults": {"10010": False, "10011": True},
+            "lastSummonTreasureResult": 0,
+            "llmResp": "",
+            "worldNews": {"officialNews": "", "folkLegends": ""},
+            "lastCmdResult": "",
+            "vendorShopList": [],
+            "weaponShopList": [],
+            "errors": [],
+        }
+    ).encode("utf-8")
+    with tempfile.TemporaryDirectory() as tmp:
+        observer = _observer(tmp)
+        try:
+            with RunningServer(observer) as server:
+                status, payload = server.post(body)
+            text = _structured_lines(observer)
+        finally:
+            observer.close()
+    assert status == 200
+    assert "roleCommandMap" in payload
+    assert "[DIGEST] D-02" in text, f"未记录 D-02：\n{text}"
+    line = next(line for line in text.splitlines() if "D-02" in line)
+    assert line.startswith("0012 D [DIGEST] D-02 "), line
+    assert "results=ok:1,fail:1" in line, f"上回合结果摘要不对：{line}"
+    assert "cmds=" in line
+
+
+def test_command_summary_lists_build_targets() -> None:
+    """Given 含建造的指令集，When 摘要，Then 列出建造类型与目标格。"""
+    summary = _command_summary(
+        {
+            1: {"action": "build", "name": "wall", "targetPos": [{"x": 9, "y": 23}]},
+            2: {"action": "move", "targetPos": [{"x": 3, "y": 4}]},
+        }
+    )
+    assert summary == "build:1,move:1+wall@(9,23)", summary
+    assert _command_summary({}) == "none"
+    assert _command_summary(None) == "none"
+    assert _result_summary({"1": True, "2": False, "3": "x"}) == "ok:1,fail:1,other:1"
+    assert _result_summary({}) == "none"
 
 def main() -> int:
     """零依赖测试运行器：执行全部 test_* 函数并报告。"""
