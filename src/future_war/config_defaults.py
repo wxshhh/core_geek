@@ -50,7 +50,7 @@ DEFAULT_CONFIG: Final[dict[str, JsonValue]] = {
             "base_upgrade": 0.3,
             "wall_upgrade": 0.2,
         },
-        "stone_reserve": 2,
+        "stone_reserve": 4,
         "sell_batch": 5,
         "vendor_peak_window": 5,
         "dusk_return": 70,

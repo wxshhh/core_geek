@@ -123,7 +123,7 @@
 | `economy.sell_hold_ratio` | float | `0.3` | 库存持有比例（等峰值再卖的持仓上限） |
 | `economy.emergency_reserve` | int | `100` | 应急金币保留（范围炸弹/眩晕法宝应对 BOSS 夜） |
 | `economy.budget_ratios` | object | `{weapon_upgrade:0.5, base_upgrade:0.3, wall_upgrade:0.2}` | 金币预算分配比（和为 1） |
-| `economy.stone_reserve` | int | `2` | 手里常备的修墙石头数，超过的部分可以卖（不留给修墙的石头会被卖光，墙就永远建不起来） |
+| `economy.stone_reserve` | int | `4` | 手里常备的修墙石头数，超过的部分可以卖（不留给修墙的石头会被卖光，墙就永远建不起来）。本地模拟器 3 个种子实测第 1 天围墙数：储备 `1` → 1/6/2 · `2` → 2/8/3 · `4` → 6/9/5 · `6` → 7/11/5 · `12` → 7/4/6；储备越大墙越多、金币越少 |
 | `economy.sell_batch` | int | `5` | 背够这么多矿石才专程跑一趟小贩；不足就地继续挖（一趟十来回合只换 1 金币不划算） |
 | `economy.vendor_peak_window` | int | `5` | 价格峰值判定窗口（回合数） |
 | `economy.dusk_return` | int | `70` | 白天第几回合起停止施工、转入黄昏就位。**默认 70 = 白天结束时**，即白天干满、就位交给夜晚（`combat.staging_night_rounds`）。设成 40 会白丢后面 30 个白天回合 |

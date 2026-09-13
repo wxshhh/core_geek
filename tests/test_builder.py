@@ -19,7 +19,11 @@ from future_war.config import Config  # noqa: E402
 from future_war.models import Pos, enum_to_str, parse_request  # noqa: E402
 from future_war.core import WorldModel, chebyshev  # noqa: E402
 from future_war.strategy import plan_upgrades, preferred_weapon_cells, upgrade_order  # noqa: E402
-from future_war.strategy.builder import nearest_shelter, shelter_cells  # noqa: E402
+from future_war.strategy.builder import (  # noqa: E402
+    nearest_shelter,
+    shelter_cells,
+    voucher_trip,
+)
 
 
 def _pos(x: int, y: int) -> dict[str, int]:
@@ -220,6 +224,33 @@ def test_nearest_shelter_picks_closest_and_falls_back_to_base() -> None:
     assert near in shelter_cells(view)
     empty = _view([_role(10013, "station", 0, 0, 1500, level=1)])
     assert nearest_shelter(empty, Pos(5, 5)) is not None  # 仍有贴基地的空位
+
+
+# ------------------------------------------------------------------ 升级券的使用路径
+
+
+def test_voucher_trip_walks_then_signals_use() -> None:
+    """Given 工人背着围墙券、目标在远处，When 规划，Then 先 walk、到旁边改判 use。
+
+    回归：`plan_turn` 用 `setdefault` 合并升级指令，经济指令永远先占住角色 →
+    `plan_upgrades` 的 use 被静默丢掉（实测整局 buy 3~8 次、use 0 次）。
+    """
+    wall = _role(10043, "wall", 30, 20, 1000, level=1)
+    far_view = _view([STATION, wall, _role(10010, "worker", 5, 5, 220,
+                                           backpack=["WallUpgradeVoucher1"])])
+    near_view = _view([STATION, wall, _role(10010, "worker", 29, 20, 220,
+                                            backpack=["WallUpgradeVoucher1"])])
+    action, target = voucher_trip(far_view, far_view.own_workers()[0])
+    assert action == "walk" and target == Pos(30, 20)
+    assert voucher_trip(near_view, near_view.own_workers()[0]) == ("use", None)
+
+
+def test_voucher_trip_ignores_voucher_without_target() -> None:
+    """Given 场上一座围墙都没有，When 背着围墙券，Then 不产生行程（没地方用）。"""
+    view = _view([STATION, _role(10010, "worker", 5, 5, 220,
+                                 backpack=["WallUpgradeVoucher1"])])
+    assert voucher_trip(view, view.own_workers()[0]) == ("none", None)
+
 
 def main() -> int:
     """零依赖测试运行器：执行全部 test_* 函数并报告。"""

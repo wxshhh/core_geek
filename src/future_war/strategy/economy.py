@@ -29,6 +29,8 @@ from future_war.core.nav import resolve_moves
 from future_war.core.world_map import chebyshev
 from future_war.core.world_view import WorldView
 from future_war.strategy.builder import (
+    affordable_voucher,
+    voucher_trip,
     assign_controllers,
     base_center,
     preferred_weapon_cells,
@@ -40,10 +42,8 @@ from future_war.strategy.builder import (
 
 WEAPON_COST: Final = 25
 WALL_COST: Final = 1
-VOUCHER_COST: Final = 100
-VOUCHER: Final = "WeaponUpgradeVoucher1"
 SELL_THRESHOLD: Final = 5  # 背着这么多矿石才值得专门跑一趟小贩
-STONE_RESERVE: Final = 2  # 手里常备的修墙石头（其余石头可以卖）
+STONE_RESERVE: Final = 4  # 手里常备的修墙石头（其余石头可以卖）
 DUSK_RETURN: Final = 70  # 70 = 白天不提前就位（交给夜晚回位）
 DAY_LENGTH: Final = 130
 WALL_MAX: Final = 12
@@ -90,7 +90,7 @@ def plan_economy(
         return _plan_staging(view)
     if state.builder_id is not None and state.builder_id not in {w.id for w in workers}:
         state.builder_id = None
-    orders = _work_orders(view, workers, max_weapons, state)
+    orders = _work_orders(view, workers, max_weapons, state, config)
     assignment = _assign_mines(view, workers)
     commands: dict[int, RoleCommand] = {}
     goals: dict[int, Pos] = {}
@@ -209,6 +209,7 @@ def _work_orders(
     workers: list[Role],
     max_weapons: int,
     state: EconomyState,
+    config: Config | None = None,
 ) -> dict[int, str]:
     """分工：1 名「建造者」（先武器后围墙）+ 其余「经济」（采卖）。
 
@@ -225,7 +226,7 @@ def _work_orders(
         builder = _nearest_worker(workers, cells).id if cells else workers[0].id
         state.builder_id = builder
     orders[builder] = "build"
-    shop = _shopper(view, workers, max_weapons, orders[builder], state)
+    shop = _shopper(view, workers, max_weapons, orders[builder], state, config)
     if shop is not None:
         orders[shop.id] = "shop"
     return orders
@@ -307,14 +308,17 @@ def _shopper(
     max_weapons: int,
     builder: str,
     state: EconomyState,
+    config: Config | None = None,
 ) -> Role | None:
     """武器建满、防线铺完且金币够买券时，指派离武器商店最近的**非建造者**采购。
 
     建造者不参与采购：否则它一去一回，武器/围墙的施工就停摆，另一名工人又没
     被授权铺墙（旧实现两名工人偶尔会抢同一格围墙）。
     """
-    if len(view.own_weapons()) < max_weapons or view.gold() < VOUCHER_COST:
+    if len(view.own_weapons()) < max_weapons:
         return None
+    if affordable_voucher(view, view.gold(), config) is None:
+        return None  # 没有「买得起又用得到」的券（20 金围墙券也算）就别派人去商店
     # 注意：**不能**用「防线还没铺完」挡住采购。围墙目标 12 堵本来就常修不满，
     # 旧判断等于永久占住采卖工人 → 武器永远停在 level1（真机实测正是如此：
     # 基地在夜里被推平，而金币攒着没处花）。升到 level2/3 直接翻倍夜里的输出，
@@ -355,6 +359,12 @@ def _plan_worker(
         if plan is not None:
             return plan
         # 武器建满 / 金币不足 / 无可用格 → 建造者转去铺墙，别闲着
+    action, target = voucher_trip(view, worker, config)
+    if action == "use":
+        # 本回合什么都不发，让 plan_upgrades 的 use 指令落地（否则被经济指令盖掉）
+        return None, None
+    if action == "walk":
+        return None, target  # 先把券送到目标建筑旁
     stone_keep = _stone_reserve(view, state, config)
     wall_ok = order in ("build", "econ", "shop") and _wall_ready(view, state, config)
     if wall_ok:
@@ -362,7 +372,7 @@ def _plan_worker(
         if plan is not None:
             return plan  # 顺路砌：不花行程
     if order == "shop":
-        plan = _plan_shopping(view, worker)
+        plan = _plan_shopping(view, worker, config)
         if plan is not None:
             return plan
     sold = _plan_sell(view, worker, stone_keep, config)
@@ -524,16 +534,17 @@ def _threat_dir(view: WorldView, state: EconomyState) -> tuple[int, int] | None:
 
 
 def _plan_shopping(
-    view: WorldView, worker: Role
+    view: WorldView, worker: Role, config: Config | None = None
 ) -> tuple[RoleCommand | None, Pos | None] | None:
-    """前往武器商店买武器升级券（到店即买）。"""
-    if view.gold() < VOUCHER_COST:
+    """前往武器商店买券（到店即买）：按性价比挑，20 金围墙券优先于 100 金武器券。"""
+    voucher = affordable_voucher(view, view.gold(), config)
+    if voucher is None:
         return None
     shop = view.weapon_shop_pos()
     if shop is None:
         return None
     if chebyshev(worker.pos, shop) <= 1:
-        return RoleCommand(action=Action.BUY, name=VOUCHER, num=1), None
+        return RoleCommand(action=Action.BUY, name=voucher, num=1), None
     return None, shop
 
 

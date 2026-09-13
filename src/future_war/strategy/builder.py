@@ -42,6 +42,19 @@ _WALL_MAX_RADIUS: Final = 6  # 围墙候选方环最大半径
 _WEAPON_KINDS: Final = frozenset({"gatling", "railgun", "rocket"})
 _MOBILE_KINDS: Final = frozenset({"pioneer", "worker"})
 
+# 升级券单价（任务书 §4.6.3 价目表）——采购要按性价比排序，不能只盯着最贵的
+_VOUCHER_PRICE: Final = {
+    "WallUpgradeVoucher1": 20,
+    "WallUpgradeVoucher2": 30,
+    "WeaponUpgradeVoucher1": 100,
+    "WeaponUpgradeVoucher2": 150,
+    "StationUpgradeVoucher1": 100,
+    "StationUpgradeVoucher2": 150,
+}
+
+# 同价时的取舍（与 build.upgrade_order 的意图一致：武器 > 基地 > 围墙）
+_VOUCHER_CATEGORY_RANK: Final = {"weapon": 0, "station": 1, "wall": 2}
+
 # 升级券 → (目标类别, 起始等级, 目标等级)
 _VOUCHERS: Final = {
     "WeaponUpgradeVoucher1": ("weapon", 1, 2),
@@ -358,6 +371,80 @@ def assign_controllers(
 
 
 # ------------------------------------------------------------------ 升级券
+
+
+def affordable_voucher(
+    view: WorldView, gold: int, config: Config | None = None
+) -> str | None:
+    """按性价比挑一张「买得起、且买得到用场」的升级券（价格升序）。
+
+    为什么不是只买 ``WeaponUpgradeVoucher1``：它是 100 金，而围墙升级券只要
+    **20 金**。用户真机实测里金币峰值只有 45~60，盯着 100 金的券等于永远买不到
+    任何东西 —— 武器永远 level1，夜里被推平。先买 20 金的把已有围墙升到 L2，
+    同样的钱换到的夜间硬度最高。
+
+    「用得到」= 场上有该类别、且等级正好是券的起始等级的建筑（没有目标就白买）。
+    背包放不下时不采购（§4.6.3：背包不足则购买失败）。
+    """
+    if not _has_room(view):
+        return None
+    candidates = [
+        (price, _VOUCHER_CATEGORY_RANK.get(_VOUCHERS[name][0], 9), name)
+        for name, price in _VOUCHER_PRICE.items()
+        if price <= gold and _has_target(view, name)
+    ]
+    if not candidates:
+        return None
+    return min(candidates)[2]
+
+
+def _has_target(view: WorldView, voucher: str) -> bool:
+    """场上是否有能立刻升级的建筑（类别匹配且等级 == 券的起始等级）。"""
+    category, from_level, to_level = _VOUCHERS[voucher]
+    if to_level > MAX_LEVEL:
+        return False
+    return any(
+        _matches(building, category) and building.level == from_level
+        for building in view.own_roles()
+    )
+
+
+def _has_room(view: WorldView) -> bool:
+    """至少有一名可移动角色背包没满（满了买不了，§4.6.3）。"""
+    for role in _mobile(view):
+        cap = getattr(role, "backPackCapability", 0)
+        # 缺省/非法（<=0）视为「未知容量」：不因此拒绝采购，真满了让判题器拒
+        if cap <= 0 or len(role.backpack) < cap:
+            return True
+    return False
+
+
+def voucher_trip(
+    view: WorldView, role: Role, config: Config | None = None
+) -> tuple[str, Pos | None]:
+    """手里的升级券该怎么办：``("use", None)`` / ``("walk", 目标格)`` / ``("none", None)``。
+
+    为什么需要这一跳：``plan_upgrades`` 只在角色**已经紧贴目标**时才发 ``use``，而
+    ``plan_turn`` 是用 ``setdefault`` 合并的 —— 经济指令永远先占住该角色，``use``
+    就被静默丢掉了。实测整局 ``buy`` 3~8 次、``use`` **0 次**，武器/围墙一直停在
+    level1。所以这里显式区分三种情形，交给调用方让路或先走过去。
+    """
+    for voucher in sorted(role.backpack):
+        if voucher not in _VOUCHERS:
+            continue
+        category, from_level, _to_level = _VOUCHERS[voucher]
+        targets = [
+            building
+            for building in view.own_roles()
+            if _matches(building, category) and building.level == from_level
+        ]
+        if not targets:
+            continue
+        nearest = min(targets, key=lambda b: (chebyshev(role.pos, b.pos), b.pos.x, b.pos.y))
+        if chebyshev(role.pos, nearest.pos) <= 1:
+            return "use", None
+        return "walk", nearest.pos
+    return "none", None
 
 
 def upgrade_order(config: Config | None = None) -> tuple[str, ...]:

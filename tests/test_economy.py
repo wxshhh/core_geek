@@ -102,6 +102,10 @@ def _mine(x: int, y: int, kind: str = "stone") -> dict[str, Any]:
     return {"pos": _pos(x, y), "neutralType": kind}
 
 
+def _shop(x: int, y: int) -> dict[str, Any]:
+    return {"pos": _pos(x, y), "neutralType": "weaponShop"}
+
+
 def _vendor(x: int, y: int) -> dict[str, Any]:
     return {"pos": _pos(x, y), "neutralType": "vendor"}
 
@@ -358,12 +362,13 @@ def test_stone_is_reserved_for_walls_before_selling() -> None:
 
 
 def test_surplus_stone_beyond_reserve_is_sold() -> None:
-    """Given 石头超过储备量，When 贩卖，Then 只卖多出来的那部分。"""
-    worker = _role(10010, "worker", 5, 5, 220, backpack=["stone"] * 6)
+    """Given 石头超过储备量，When 贩卖，Then 只卖多出来的那部分（储备量按配置）。"""
+    worker = _role(10010, "worker", 5, 5, 220, backpack=["stone"] * 8)
     view = _view([STATION, worker], zones=[_vendor(6, 5)])
-    cmd = plan_economy(view)[10010]
-    assert cmd.name == "stone"
-    assert cmd.num == 4, f"应留 2 块修墙、卖 4 块，实际卖 {cmd.num}"
+    for reserve, expected in ((2, 6), (4, 4), (6, 2)):
+        cmd = plan_economy(view, _config(economy={"stone_reserve": reserve}))[10010]
+        assert cmd.name == "stone"
+        assert cmd.num == expected, f"储备 {reserve} 时应卖 {expected}，实际 {cmd.num}"
 
 
 def test_sell_trip_waits_for_a_full_batch() -> None:
@@ -372,3 +377,45 @@ def test_sell_trip_waits_for_a_full_batch() -> None:
     view = _view([STATION, worker], zones=[_vendor(30, 5), _mine(6, 5, "copper")])
     cmd = plan_economy(view)[10010]
     assert enum_to_str(cmd.action) == "collect", "一趟只换 1 金币不值得跑，先挖矿"
+
+
+def _shop_view(*, gold: int, with_wall: bool, with_weapon: bool = True):
+    """3 座武器已建满 → 有空闲工人可派去采购；采购者紧贴武器商店 (7,5)。"""
+    roles = [_role(10013, "station", 20, 20, 1500, level=1)]
+    if with_weapon:
+        roles += [
+            _role(10040, "railgun", 22, 20, 1000, level=1, attackPower=10, attackRange=6),
+            _role(10041, "rocket", 24, 20, 1000, level=1, attackPower=20, attackRange=10),
+            _role(10042, "gatling", 26, 20, 1000, level=1, attackPower=10, attackRange=3),
+        ]
+    if with_wall:
+        roles.append(_role(10043, "wall", 19, 20, 1000, level=1))
+    roles.append(_role(10010, "worker", 20, 18, 220))  # 离蓝区最近 → 建造者
+    roles.append(_role(10011, "worker", 7, 6, 220))  # 紧贴商店 → 采购者
+    return _view(roles, zones=[_vendor(30, 30), _shop(7, 5)], gold=gold)
+
+
+def test_buys_cheap_wall_voucher_before_expensive_weapon_voucher() -> None:
+    """Given 有 L1 武器与 L1 围墙、金币 25，When 采购，Then 买 20 金的围墙券。
+
+    回归：旧实现只买 100 金的 WeaponUpgradeVoucher1，而真机金币峰值只有 45~60
+    → 永远买不了任何东西、武器永远 level1，夜里被推平。
+    """
+    commands = plan_economy(_shop_view(gold=25, with_wall=True))
+    buys = [c for c in commands.values() if enum_to_str(c.action) == "buy"]
+    assert buys, f"应采购，实际指令 {[enum_to_str(c.action) for c in commands.values()]}"
+    assert buys[0].name == "WallUpgradeVoucher1", buys[0].name
+
+
+def test_no_voucher_when_no_matching_target() -> None:
+    """Given 场上一座围墙都没有，When 只有 25 金，Then 不买围墙券（没有升级目标）。"""
+    commands = plan_economy(_shop_view(gold=25, with_wall=False))
+    assert not any(enum_to_str(c.action) == "buy" for c in commands.values())
+
+
+def test_buys_weapon_voucher_once_gold_allows() -> None:
+    """Given 金币 120（够 100 金武器券），When 围墙券不在候选或没有围墙目标，Then 买武器券。"""
+    commands = plan_economy(_shop_view(gold=120, with_wall=False))
+    buys = [c for c in commands.values() if enum_to_str(c.action) == "buy"]
+    assert buys, "应采购武器升级券"
+    assert buys[0].name == "WeaponUpgradeVoucher1", buys[0].name
