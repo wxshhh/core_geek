@@ -102,6 +102,7 @@
 | `build.wall_labyrinth_depth` | int | `3` | 围墙浅迷宫深度（拖延而非整圈，方案 §3.2） |
 | `build.wall_max` | int | `12` | 本局围墙目标数上限（只建基地最内圈，避免围死自己） |
 | `build.wall_enabled` | bool | `true` | 围墙总开关；关闭即退回「纯武器防线」基线 |
+| `build.wall_probe_from` | int | `45` | 白天第几回合起进入「专门铺墙」时段：之前留给经济（挖矿→贩卖→买券），之后专心试黄区。把两者放在同一优先级会互相饿死（真机实测：墙 0/12 且金币恒为 0） |
 | `build.wall_probe_budget` | int | `12` | 每天允许的「探路」失败次数：可建造区是推断的，先用有限次试错探明真区域。本地模拟器 3 个种子实测第 1 天建成的墙数：`6` → 0/0/3，`12` → 3/0/3，`24` → 3/6/3。石头够就调大 |
 
 ### combat — 战斗（方案 §3.3/§4.4）
@@ -122,6 +123,8 @@
 | `economy.sell_hold_ratio` | float | `0.3` | 库存持有比例（等峰值再卖的持仓上限） |
 | `economy.emergency_reserve` | int | `100` | 应急金币保留（范围炸弹/眩晕法宝应对 BOSS 夜） |
 | `economy.budget_ratios` | object | `{weapon_upgrade:0.5, base_upgrade:0.3, wall_upgrade:0.2}` | 金币预算分配比（和为 1） |
+| `economy.stone_reserve` | int | `2` | 手里常备的修墙石头数，超过的部分可以卖（不留给修墙的石头会被卖光，墙就永远建不起来） |
+| `economy.sell_batch` | int | `5` | 背够这么多矿石才专程跑一趟小贩；不足就地继续挖（一趟十来回合只换 1 金币不划算） |
 | `economy.vendor_peak_window` | int | `5` | 价格峰值判定窗口（回合数） |
 | `economy.dusk_return` | int | `70` | 白天第几回合起停止施工、转入黄昏就位。**默认 70 = 白天结束时**，即白天干满、就位交给夜晚（`combat.staging_night_rounds`）。设成 40 会白丢后面 30 个白天回合 |
 

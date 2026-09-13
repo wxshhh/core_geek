@@ -22,6 +22,8 @@ from future_war.core.world_view import WorldView
 from future_war.strategy.sandbox import parse_cmd_result
 
 _ANSWER_MARKER: Final = "ANSWER:"
+# LLM 明确表示「还缺信息」时不要当答案提交（提交错误答案会拉低通过率）
+_NON_ANSWERS: Final = frozenset({"NEXT", "CONTINUE", "NEED_MORE", "UNKNOWN", "继续", "未知"})
 _EXPLORE_CMD: Final = "echo explore"
 _DAY_ROUNDS: Final = 70
 _DAY_LENGTH: Final = 130
@@ -50,6 +52,8 @@ class TaskState:
     pending_cmd: str | None = None
     commands_sent: list[str] = field(default_factory=list)
     observations: list[str] = field(default_factory=list)
+    pending_prompt: bool = False  # 上回合发过 prompt → 本回合认领 llmResp
+    llm_answer: str = ""  # 最近一次 LLM 回复原文（答案的候选来源）
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,9 +73,10 @@ def plan_task(
         return TaskAction({})
     state = state if state is not None else TaskState()
     if _must_return_home(view, config):
-        # 黄昏/夜晚：任务再香也不如多一座武器开火（《任务书》§五：离开任务点或
-        # 超时都只是任务结束，会按已提交的最佳答案结算，不会白做）
-        _reset(state)
+        # 黄昏/夜晚：任务再香也不如多一座武器开火，所以**不动**（开拓者回去当操控者）。
+        # 但只暂停、**不重置**：旧实现在这里 _reset，把 observations/signature 全清空，
+        # 于是任何需要跨天推进的任务每晚归零、第二天从头再来 —— 真机表现就是
+        # 「反复 acceptTask，永远 submitAnswer」。
         return TaskAction({})
     pioneer = view.own_pioneer()
     if not pioneer:
@@ -92,7 +97,7 @@ def plan_task(
         state.observations = []
 
     _digest_result(view, state)
-    answer = _answer_from(state.observations)
+    answer = _answer_from(state.observations, state.llm_answer)
     if answer is not None:
         return TaskAction(
             {unit.id: RoleCommand(action=Action.SUBMIT_ANSWER, taskAnswer=answer)}
@@ -101,6 +106,7 @@ def plan_task(
         command = _next_command(state)
         state.pending_cmd = command
         state.commands_sent.append(command)
+        state.pending_prompt = True
         return TaskAction({}, prompt=_prompt(phase, state), execute_cmd=command)
     return TaskAction({})
 
@@ -121,6 +127,13 @@ def _seek_task(view: WorldView, unit, config: Config | None) -> TaskAction:
 
 
 def _digest_result(view: WorldView, state: TaskState) -> None:
+    """认领上一回合的两种异步回复：``llmResp``（LLM 答案）与 ``lastCmdResult``（沙盒）。"""
+    if state.pending_prompt:
+        response = view.llm_resp().strip()
+        if response:
+            state.llm_answer = response
+            state.observations.append(response)
+        state.pending_prompt = False
     if state.pending_cmd is None:
         return
     result = parse_cmd_result(view.last_cmd_result())
@@ -129,11 +142,31 @@ def _digest_result(view: WorldView, state: TaskState) -> None:
     state.pending_cmd = None
 
 
-def _answer_from(observations: list[str]) -> str | None:
-    for observation in observations:
-        if _ANSWER_MARKER in observation:
-            tail = observation.split(_ANSWER_MARKER, 1)[1].strip()
-            return tail.splitlines()[0].strip() if tail else None
+def _answer_from(observations: list[str], llm_answer: str = "") -> str | None:
+    """从沙盒输出与 LLM 回复里取答案。
+
+    优先显式 ``ANSWER:`` 标记（沙盒侧约定），否则退回 LLM 回复的首个可用行。
+    旧实现只认标记、且只看沙盒输出，而 LLM 回复根本没被读回 —— 于是**永远没有
+    可提交的答案**，真机上表现为「反复 acceptTask 却从不 submitAnswer」（0 分）。
+    """
+    for text in (*observations, llm_answer):
+        if _ANSWER_MARKER in text:
+            tail = text.split(_ANSWER_MARKER, 1)[1].strip()
+            line = tail.splitlines()[0].strip() if tail else ""
+            if line:
+                return line
+    return _first_answer_line(llm_answer)
+
+
+def _first_answer_line(text: str) -> str | None:
+    """LLM 回复里取最终答案：跳过空行与「还需要更多信息」之类的应答。"""
+    for raw in text.splitlines():
+        line = raw.strip().strip('"').strip()
+        if not line:
+            continue
+        if line.upper().rstrip(":：") in _NON_ANSWERS:
+            return None
+        return line
     return None
 
 
@@ -145,7 +178,10 @@ def _next_command(state: TaskState) -> str:
 
 def _prompt(phase: str, state: TaskState) -> str:
     observed = " | ".join(state.observations)
-    return f"task={phase}\nobserved={observed}\nnext={_next_command(state)}"
+    return (
+        f"task={phase}\nobserved={observed}\nnext={_next_command(state)}\n"
+        "只输出最终答案本身（单行、不要解释）；信息还不够就只输出 NEXT"
+    )
 
 
 def _signature(phase: str) -> str:
@@ -168,7 +204,7 @@ def _must_return_home(view: WorldView, config: Config | None) -> bool:
     """是否必须回防：夜晚，或白天已进入黄昏就位阶段。"""
     if view.is_night():
         return True
-    threshold = _int_config(config, "economy.dusk_return", 40)
+    threshold = _int_config(config, "economy.dusk_return", 70)
     return (view.round_no - 1) % _DAY_LENGTH >= threshold
 
 

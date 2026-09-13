@@ -20,7 +20,7 @@ from future_war.core import WorldModel  # noqa: E402
 from future_war.strategy import SkillLibrary, StrategyBot, TaskState, plan_task  # noqa: E402
 
 
-def _request(*, pioneer_pos=(14, 14), phase_task="", last_cmd="", round_no=1):
+def _request(*, pioneer_pos=(14, 14), phase_task="", last_cmd="", round_no=1, llm_resp=""):
     return {
         "roundNo": round_no,
         "mapInfo": {
@@ -50,7 +50,7 @@ def _request(*, pioneer_pos=(14, 14), phase_task="", last_cmd="", round_no=1):
         "phaseTask": phase_task,
         "lastRoundRoleActionResults": {},
         "lastSummonTreasureResult": 0,
-        "llmResp": "",
+        "llmResp": llm_resp,
         "worldNews": {"officialNews": "", "folkLegends": ""},
         "lastCmdResult": last_cmd,
         "vendorShopList": [],
@@ -160,6 +160,65 @@ def test_bot_emits_prompt_for_active_task() -> None:
     assert response.executeCmd
 
 
+def test_pioneer_returns_home_at_dusk_instead_of_tasking() -> None:
+    """Given 黄昏就位阶段（显式配置 dusk_return=40），When 规划任务，Then 不再接/做任务。
+
+    默认 ``economy.dusk_return`` 已改为 70（白天干满），所以要测这个分支必须显式配。
+    """
+    from future_war.strategy.task_agent import plan_task
+
+    view = _view(pioneer_pos=(14, 14), round_no=45)
+    state = TaskState()
+    state.observations = ["already explored"]
+    config = Config(
+        data={"economy": {"dusk_return": 40}}, profile="t", commit="c", config_hash="h"
+    )
+    action = plan_task(view, config, state)
+    assert action.commands == {}
+    assert action.execute_cmd == ""
+    # **只暂停、不清空**：旧实现在这里 _reset，跨天任务每晚归零 → 永远做不完
+    assert state.observations == ["already explored"]
+
+
+def test_llm_response_is_submitted_as_task_answer() -> None:
+    """Given 已领任务且上回合问过 LLM，When 收到 llmResp，Then 提交该答案。
+
+    回归真机现象：反复 acceptTask 却从不 submitAnswer（任务分 0）。旧实现只从沙盒
+    输出里找 ``ANSWER:`` 标记，**llmResp 根本没被读回**，所以永远没有可提交的答案。
+    """
+    from future_war.strategy.task_agent import plan_task
+
+    state = TaskState()
+    # 第 1 回合：已领任务（phaseTask 非空）→ 发出 prompt + 沙盒命令
+    first = plan_task(_view(phase_task="求 6*7", round_no=1), None, state)
+    assert first.prompt, "应先向 LLM 提问"
+    assert state.pending_prompt is True
+    # 第 2 回合：judge 回传 llmResp → 直接提交这个答案
+    second = plan_task(_view(phase_task="求 6*7", round_no=2, llm_resp="42"), None, state)
+    assert second.commands, f"应提交答案，实际 {second.commands}"
+    command = next(iter(second.commands.values()))
+    assert enum_to_str(command.action) == "submitAnswer"
+    assert command.taskAnswer == "42"
+
+
+def test_llm_next_reply_is_not_submitted_as_answer() -> None:
+    """Given LLM 只回 NEXT（信息不够），When 规划，Then 不提交、继续推进。"""
+    from future_war.strategy.task_agent import plan_task
+
+    state = TaskState()
+    plan_task(_view(phase_task="某任务", round_no=1), None, state)
+    action = plan_task(_view(phase_task="某任务", round_no=2, llm_resp="NEXT"), None, state)
+    assert action.commands == {}, "NEXT 不该被当成答案提交"
+
+
+def test_pioneer_returns_home_at_night() -> None:
+    """Given 夜晚，When 规划任务，Then 不产出任务指令（夜里要操控武器）。"""
+    from future_war.strategy.task_agent import plan_task
+
+    view = _view(pioneer_pos=(14, 14), round_no=85)
+    assert plan_task(view, None, TaskState()).commands == {}
+
+
 def main() -> int:
     """零依赖测试运行器：执行全部 test_* 函数并报告。"""
     test_funcs = [
@@ -182,24 +241,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-def test_pioneer_returns_home_at_dusk_instead_of_tasking() -> None:
-    """Given 白天进入黄昏就位阶段，When 规划任务，Then 不再接/做任务（回防操控武器）。"""
-    from future_war.strategy.task_agent import plan_task
-
-    # 白天第 45 回合（已过 economy.dusk_return=40）
-    view = _view(pioneer_pos=(14, 14), round_no=45)
-    state = TaskState()
-    action = plan_task(view, None, state)
-    assert action.commands == {}
-    assert action.execute_cmd == ""
-    assert state.signature is None
-
-
-def test_pioneer_returns_home_at_night() -> None:
-    """Given 夜晚，When 规划任务，Then 不产出任务指令（夜里要操控武器）。"""
-    from future_war.strategy.task_agent import plan_task
-
-    view = _view(pioneer_pos=(14, 14), round_no=85)
-    assert plan_task(view, None, TaskState()).commands == {}

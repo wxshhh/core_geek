@@ -42,12 +42,14 @@ WEAPON_COST: Final = 25
 WALL_COST: Final = 1
 VOUCHER_COST: Final = 100
 VOUCHER: Final = "WeaponUpgradeVoucher1"
-SELL_THRESHOLD: Final = 5
+SELL_THRESHOLD: Final = 5  # 背着这么多矿石才值得专门跑一趟小贩
+STONE_RESERVE: Final = 2  # 手里常备的修墙石头（其余石头可以卖）
 DUSK_RETURN: Final = 70  # 70 = 白天不提前就位（交给夜晚回位）
 DAY_LENGTH: Final = 130
 WALL_MAX: Final = 12
 # 与 config 默认值保持一致：config=None 时（测试/模拟器直连）也走同一套参数
 WALL_PROBE_BUDGET: Final = 12
+WALL_PROBE_FROM: Final = 45  # 白天第几回合起专门铺墙（之前留给经济）
 MAX_WEAPONS: Final = 3
 _WEAPON_ORDER: Final = ("rocket", "railgun", "gatling")
 _DEFAULT_PLAN: Final = ("rocket", "railgun", "railgun")
@@ -236,6 +238,20 @@ def _roll_probe_day(view: WorldView, state: EconomyState) -> None:
         state.wall_probes = 0  # 不重置的话，用完一次就永久放弃围墙
 
 
+def _wall_window(view: WorldView, config: Config | None) -> bool:
+    """是否进入「专门铺墙」时段：白天第 ``build.wall_probe_from`` 回合起。
+
+    用户真机实测的教训：把「专程跑墙位」和经济工作混在同一个优先级里争抢，会让
+    工人「挖一格石头 → 跑墙线 → 试错失败 → 再挖一格」无限空转 —— 墙 0/12，金币也
+    恒为 0。改成**按时间分片**：上午纯经济（挖矿/贩卖/买券），下午专心铺墙。规则
+    简单、可预测，两边都不再互相饿死。
+    """
+    if not view.is_day():
+        return False
+    threshold = _int_config(config, "build.wall_probe_from", WALL_PROBE_FROM)
+    return (view.round_no - 1) % DAY_LENGTH >= threshold
+
+
 def _wall_ready(view: WorldView, state: EconomyState, config: Config | None) -> bool:
     """是否准许动用石头修墙。
 
@@ -256,6 +272,19 @@ def _wall_ready(view: WorldView, state: EconomyState, config: Config | None) -> 
     if state.wall_confirmed:
         return True
     return state.wall_probes < _int_config(config, "build.wall_probe_budget", WALL_PROBE_BUDGET)
+
+
+def _stone_reserve(view: WorldView, state: EconomyState, config: Config | None) -> int:
+    """手里要留住的石头数（其余可以卖）：够修完剩下的墙，且不超过 ``economy.stone_reserve``。
+
+    留一点就够：真正的瓶颈是「不知道黄区在哪」，不是石头不够；囤 12 块只会把
+    白天的产出全锁在背包里（用户真机实测：金币 0、白天无产出）。
+    """
+    if not _flag(config, "build.wall_enabled", True):
+        return 0  # 不修墙就不必留石头，全部可以换钱
+    remaining = max(0, _wall_target(view, state) - len(view.own_walls()))
+    cap = _int_config(config, "economy.stone_reserve", STONE_RESERVE)
+    return min(remaining, max(0, cap))
 
 
 def _flag(config: Config | None, key: str, default: bool) -> bool:
@@ -286,8 +315,10 @@ def _shopper(
     """
     if len(view.own_weapons()) < max_weapons or view.gold() < VOUCHER_COST:
         return None
-    if 0 < len(view.own_walls()) < _wall_target(view, state):
-        return None  # 防线还没铺完，先让工人施工
+    # 注意：**不能**用「防线还没铺完」挡住采购。围墙目标 12 堵本来就常修不满，
+    # 旧判断等于永久占住采卖工人 → 武器永远停在 level1（真机实测正是如此：
+    # 基地在夜里被推平，而金币攒着没处花）。升到 level2/3 直接翻倍夜里的输出，
+    # 收益高于再多砌两堵墙。铺墙时段（build.wall_probe_from）之后工人自然会回去铺。
     shop = view.weapon_shop_pos()
     candidates = [w for w in workers if w.id != builder]
     if shop is None or not candidates:
@@ -306,44 +337,69 @@ def _plan_worker(
 ) -> tuple[RoleCommand | None, Pos | None]:
     """按职责产出（指令 | 移动目标）。
 
-    优先级：建造武器（``build``）→ 围墙（``econ``，缺石头时先采石）→ 买券
-    （``shop``）→ 贩卖（背包够阈值）→ 采集。围墙只交给采卖工人，专职建造者
-    专心把武器建满：两人都去铺墙会让第 1 天既没武器也没钱。
+    优先级（用户真机实测后重排，见下）：建造武器 → **顺路砌墙** → **贩卖（有整批
+    货就先去小贩）** → 专门跑一趟墙位 → 买券 → 采集。
+
+    为什么把经济排在「专门跑墙位」前面：旧顺序里只要背包有 1 块石头，采卖工人就
+    一直往墙线跑，而它为了修墙又总在采石 —— 结果**永远不去小贩**，金币从第 5 回合
+    起就是 0，白天再无产出；同时探路把当天额度烧光（`wall:probe-denied`），墙还是
+    0/12。现在：
+
+    * **顺路砌墙**（已经在候选格旁边）永远允许 —— 零额外行程成本；
+    * 有整批货（``economy.sell_batch``）就**先去卖**，途中不会被墙打断；
+    * 专门跑墙位只在**空手**（没有待卖矿石）时做，避免「挖一格 → 跑墙线 → 再挖一格」
+      的来回空转；已确认过合法墙位（``wall_confirmed``）则值得专程去铺。
     """
     if order == "build":
         plan = _plan_build_weapon(view, config, worker, max_weapons, state.failed_build_cells)
         if plan is not None:
             return plan
         # 武器建满 / 金币不足 / 无可用格 → 建造者转去铺墙，别闲着
-    if order in ("build", "econ", "shop") and _wall_ready(view, state, config):
-        plan = _plan_build_wall(view, config, worker, state)
+    stone_keep = _stone_reserve(view, state, config)
+    wall_ok = order in ("build", "econ", "shop") and _wall_ready(view, state, config)
+    if wall_ok:
+        plan = _plan_build_wall(view, config, worker, state, adjacent_only=True)
         if plan is not None:
-            return plan
+            return plan  # 顺路砌：不花行程
     if order == "shop":
         plan = _plan_shopping(view, worker)
         if plan is not None:
             return plan
-    if order in ("econ", "shop") or _ore_count(worker) >= SELL_THRESHOLD:
-        sold = _plan_sell(view, worker)
-        if sold is not None:
-            return sold
-    need_stone = _needs_stone(view, state, config, order)
+    sold = _plan_sell(view, worker, stone_keep, config)
+    if sold is not None:
+        return sold
+    # 专门跑墙位：已确认过合法墙位（值得专程铺线），或已进入「铺墙时段」
+    # （``build.wall_probe_from``，默认白天第 45 回合起）。上午留给经济：挖矿→贩卖→
+    # 买券，下午石头也攒下了，再专心试推断出来的黄区。
+    # 只在「手上没有铜铁（正在攒的那批货已脱手）」时才专程跑墙位：否则挖一格就
+    # 被墙位拉走，永远攒不满一趟的货量，金币也就永远上不去（真机实测金币卡死在 45）。
+    if wall_ok and _cargo(worker) == 0 and (
+        state.wall_confirmed or _wall_window(view, config)
+    ):
+        plan = _plan_build_wall(view, config, worker, state, adjacent_only=False)
+        if plan is not None:
+            return plan
+    need_stone = _needs_stone(view, state, config, order, worker)
     return _plan_collect(worker, _preferred_mine(view, worker, order, mine, need_stone))
 
 
 def _needs_stone(
-    view: WorldView, state: EconomyState, config: Config | None, order: str
+    view: WorldView, state: EconomyState, config: Config | None, order: str, worker: Role
 ) -> bool:
-    """当前是否真的缺石头（缺 → 优先采石；不缺 → 专心挖铜铁换钱）。"""
+    """背包里的石头是否还没到储备量（没到 → 优先采石；到了 → 专心挖铜铁换钱）。
+
+    旧实现是「只要还有墙没修就永远优先采石」，于是石头一直占着背包、卖不出去，
+    金币从开局第 5 回合起恒为 0。改成只看储备量：备够 2 块就转去挖铜/铁换钱。
+    """
     if not _flag(config, "build.wall_enabled", True):
         return False
     if order not in ("build", "econ", "shop"):
         return False
     if order == "build" and len(view.own_weapons()) < _int_config(
-        config, "build.day1_max_weapons", 3
+        config, "build.day1_max_weapons", MAX_WEAPONS
     ):
         return False  # 建造者手上还有武器要建 → 先专心攒金币，别去挖石头
-    return len(view.own_walls()) < _wall_target(view, state)
+    return worker.backpack.count("stone") < _stone_reserve(view, state, config)
 
 
 def _preferred_mine(
@@ -388,9 +444,18 @@ def _plan_build_weapon(
 
 
 def _plan_build_wall(
-    view: WorldView, config: Config | None, worker: Role, state: EconomyState
+    view: WorldView,
+    config: Config | None,
+    worker: Role,
+    state: EconomyState,
+    *,
+    adjacent_only: bool = False,
 ) -> tuple[RoleCommand | None, Pos | None] | None:
-    """背包有石头就补防线（来袭面 + 两侧的 U 形）；没石头交给采集分支。"""
+    """背包有石头就补防线（来袭面 + 两侧的 U 形）；没石头交给采集分支。
+
+    ``adjacent_only=True``：只做「已经在候选格旁边」的零行程建造（顺路砌墙）。
+    否则返回走向墙线的移动目标 —— 调用方据此区分「顺路」与「专程跑一趟」。
+    """
     failed = state.failed_build_cells
     if worker.backpack.count("stone") < WALL_COST:
         return None
@@ -412,6 +477,8 @@ def _plan_build_wall(
     cell = _adjacent_cell(worker, cells, rank)
     if cell is not None:
         return RoleCommand(action=Action.BUILD, name="wall", targetPos=(cell,)), None
+    if adjacent_only:
+        return None
     return None, _nearest_cell(worker, cells, rank)
 
 
@@ -470,17 +537,49 @@ def _plan_shopping(
     return None, shop
 
 
-def _plan_sell(view: WorldView, worker: Role) -> tuple[RoleCommand | None, Pos | None] | None:
-    ore = _best_ore(worker)
+def _plan_sell(
+    view: WorldView,
+    worker: Role,
+    stone_keep: int = 0,
+    config: Config | None = None,
+) -> tuple[RoleCommand | None, Pos | None] | None:
+    """卖矿换钱。**石头先留够修墙的量**，其余（含多余石头）都可以出手。
+
+    两个关键约束（真机实测踩过的坑）：
+
+    * 留储备：不留就会把修墙的石头也卖掉，墙永远建不起来；
+    * 成批再走：背着 1 块矿就专程跑一趟小贩，一趟十来回合只换 1 金币 —— 旧实现
+      对 ``econ`` 工人无条件调用本函数，吞吐极低。现在不足 ``economy.sell_batch``
+      就地继续挖，攒够再走（已在摊前则直接卖）。
+    """
+    choice = _sellable_ore(worker, stone_keep)
     vendor = view.vendor_pos()
-    if ore is None or vendor is None:
+    if choice is None or vendor is None:
         return None
+    ore, num = choice
     if chebyshev(worker.pos, vendor) <= 1:
-        return (
-            RoleCommand(action=Action.SELL, name=ore, num=worker.backpack.count(ore)),
-            None,
-        )
+        return RoleCommand(action=Action.SELL, name=ore, num=num), None
+    batch = _int_config(config, "economy.sell_batch", SELL_THRESHOLD)
+    if num < batch and _ore_count(worker) < batch:
+        return None  # 还不够一趟的油钱：继续挖
     return None, vendor
+
+
+def _cargo(worker: Role) -> int:
+    """待卖的铜铁数量（石头不算货物 —— 它是修墙材料，备够就停）。"""
+    return sum(1 for item in worker.backpack if item in ("copper", "iron"))
+
+
+def _sellable_ore(worker: Role, stone_keep: int) -> tuple[str, int] | None:
+    """可卖的矿石与数量：先出多余的石头（占地方、又便宜），再按价值 copper > iron。"""
+    stone = worker.backpack.count("stone")
+    if stone > stone_keep:
+        return "stone", stone - stone_keep
+    for ore in ("copper", "iron"):
+        count = worker.backpack.count(ore)
+        if count > 0:
+            return ore, count
+    return None
 
 
 def _plan_collect(worker: Role, mine: Pos | None) -> tuple[RoleCommand | None, Pos | None]:

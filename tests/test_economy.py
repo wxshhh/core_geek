@@ -340,3 +340,35 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_stone_is_reserved_for_walls_before_selling() -> None:
+    """Given 有墙要修且背包石头刚够储备，When 贩卖，Then 留石头、改卖铜。
+
+    回归：旧实现按「石头占地方又便宜」优先卖石头，把修墙的料也卖掉，于是
+    「墙 0/12 + 金币 0」两头空。
+    """
+    worker = _role(
+        10010, "worker", 5, 5, 220, backpack=["stone", "stone", "copper", "copper", "copper"]
+    )
+    view = _view([STATION, worker], zones=[_vendor(6, 5)])
+    cmd = plan_economy(view)[10010]
+    assert cmd.name == "copper", "石头在储备量内不该卖"
+    assert cmd.num == 3
+
+
+def test_surplus_stone_beyond_reserve_is_sold() -> None:
+    """Given 石头超过储备量，When 贩卖，Then 只卖多出来的那部分。"""
+    worker = _role(10010, "worker", 5, 5, 220, backpack=["stone"] * 6)
+    view = _view([STATION, worker], zones=[_vendor(6, 5)])
+    cmd = plan_economy(view)[10010]
+    assert cmd.name == "stone"
+    assert cmd.num == 4, f"应留 2 块修墙、卖 4 块，实际卖 {cmd.num}"
+
+
+def test_sell_trip_waits_for_a_full_batch() -> None:
+    """Given 只背了 1 块铜、未到成批量，When 规划，Then 不专程跑小贩，就地继续挖。"""
+    worker = _role(10010, "worker", 5, 5, 220, backpack=["copper"])
+    view = _view([STATION, worker], zones=[_vendor(30, 5), _mine(6, 5, "copper")])
+    cmd = plan_economy(view)[10010]
+    assert enum_to_str(cmd.action) == "collect", "一趟只换 1 金币不值得跑，先挖矿"
