@@ -12,6 +12,17 @@
    （线上实测的瓶颈是**砌墙速度**，不是金币）；攒批仍然保留（一次到位连砌），
    但同一时刻只放一名工人离开矿区去墙线，另一名继续采石，杜绝两人同时在路上
    的空窗。
+
+   **白天修/重建被打掉的墙**（``build.wall_breach_first``，默认开）：夜里墙被攻破
+   后，白天先把破口补回来 —— 破口是全场唯一**被敌人用行动证明过**能打通的位置，
+   机器人夜里会沿同一条路再来。为此 ``EconomyState.wall_memory`` 记住我们砌过的
+   墙位，任何「记过但当前已不是墙」且未被证伪/未被占据的格 = 破口，排在候选最前
+   （压过正常「由内向外」的环序）；进程重启丢掉记忆时，退化为「墙线上两侧已有 ≥
+   ``build.wall_gap_min_walls`` 面墙」的缺口识别。若破口出现在**我们故意不建墙的
+   背面**，说明来袭方向判错了 → ``build.wall_breach_rearm_threat`` 允许用破口位置
+   覆盖锁定的 ``wall_dir``（只在一种明确矛盾时才改，不会每回合抖动）。残血未毁的
+   墙交给 ``consumables`` 的修复包（``consumables.wall_fixer_reserve`` 让它不受
+   100 金应急金限制），已毁的用 1 石头重砌。
 3. **买/用升级券**：金库充裕时把金币换成火力（1 级 → 2 级武器伤害翻倍）。
 4. **采集 → 贩卖**：石头既是围墙材料又能卖钱，其余按 copper > iron > stone。
 
@@ -43,7 +54,9 @@ from future_war.strategy.builder import (
     staging_cell,
     standable_cells,
     wall_line,
+    wall_side_tier,
 )
+from future_war.strategy.consumables import needs_wall_fixer, wall_fixer_target
 
 WEAPON_COST: Final = 25
 WALL_COST: Final = 1
@@ -57,8 +70,17 @@ WALL_PROBE_BUDGET: Final = 12
 WALL_STONE_BATCH: Final = 3  # 背包攒够这么多石头才值得跑一趟墙线（一次到位连砌）
 WALL_PROBE_FROM: Final = 0  # 0 = 全天可铺墙（黄区已按配图确定，无需攒额度探路）
 WALL_FIRST: Final = True  # 与 config 默认值一致：墙优先（全队持续采石 + 两人都能砌墙）
+# 与 config 默认值一致（三处必须同值：default.json / config_defaults.py / 这里）
+WALL_BREACH_FIRST: Final = True  # 破口（墙被攻破的格）优先重建
+WALL_BREACH_REARM_THREAT: Final = True  # 破口落在背面 → 允许推翻锁定的来袭方向
+WALL_GAP_MIN_WALLS: Final = 2  # 无记忆时：相邻已建围墙数 ≥ 此值即视为缺口
+WALL_HP_RATIO: Final = 0.4  # 与 config 的 consumables.wall_hp_ratio 同值（残血判定）
 MAX_WEAPONS: Final = 3
 _WEAPON_ORDER: Final = ("rocket", "railgun", "gatling")
+# 八邻域：判定「缺口」时数一数这格旁边已经砌了几面墙（与 builder._ADJACENT 同义）
+_NEIGHBORS: Final = tuple(
+    (dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx, dy) != (0, 0)
+)
 _DEFAULT_PLAN: Final = ("rocket", "railgun", "railgun")
 _MINE_KINDS: Final = frozenset({"stone", "iron", "copper"})
 _ORE_VALUE: Final = {"stone": 1, "iron": 3, "copper": 5}
@@ -75,10 +97,15 @@ class EconomyState:
     wall_probes: int = 0  # 当天已消耗的「探路」建造次数（每天重置）
     wall_probe_day: int = 0
     wall_confirmed: bool = False  # 是否已确认过一处合法围墙位
-    wall_dir: tuple[int, int] | None = None  # 来袭方向（首次判定后锁定）
+    wall_dir: tuple[int, int] | None = None  # 来袭方向（首次判定后锁定，可被背面破口推翻）
     notes: list[str] = field(default_factory=list)  # 本回合决策摘要（每回合重置，供日志）
     build_failures: list[tuple[int, int, str]] = field(default_factory=list)
     wall_refuted_dist: set[int] = field(default_factory=set)  # 整圈都非法的「到基地距离」
+    # 我们砌过墙的格（跨回合记忆）。判题器只给「当前快照」，墙被打掉后就再无痕迹，
+    # 所以必须自己记：「记过 + 现在不是墙」= 破口，是敌人**用行动证明过**能打通的
+    # 位置。机器人夜里走同一条路，优先补这里比按环形顺序铺更值。
+    wall_memory: set[Cell] = field(default_factory=set)
+    threat_rearms: int = 0  # 因背面破口推翻来袭方向的次数（诊断用）
 
 
 def plan_economy(
@@ -89,6 +116,7 @@ def plan_economy(
     state.notes = []
     state.build_failures = []
     _digest_feedback(view, state)
+    _rearm_threat_dir(view, state, config)
     _roll_probe_day(view, state)
     if not view.is_day():
         return {}
@@ -148,7 +176,7 @@ def _diagnose(
     notes = [
         f"gold={view.gold()}",
         f"weapons={weapons}/{max_weapons}",
-        f"walls={walls}/{_wall_target(view, state)}",
+        f"walls={walls}/{_wall_target(view, state, config)}",
         f"stone={stone}",
         f"probes={state.wall_probes}",
         # 背包构成：直接回答「为什么只采石头不采铜铁」
@@ -161,6 +189,9 @@ def _diagnose(
         "blue=" + _zone_box(view.blue_build_cells()),
         # 围墙闸门状态：直接回答「r15~r44 为什么 issued=none」
         "wall_gate=" + _wall_gate(view, config, state),
+        # 修 vs 重建：breach=被打掉、要花 1 石头重砌的格；gap=无记忆时靠「两侧有墙」
+        # 认出的缺口；repair=残血未毁、该用修复包的墙。线上一眼看出该走哪条路。
+        "wall_fix=" + _wall_fix_note(view, state, config),
         "mine=" + _mine_note(view, config, state, workers, orders),
     ]
     if state.wall_refuted_dist:
@@ -171,7 +202,7 @@ def _diagnose(
             + "+".join(f"({x},{y}):{why}" for x, y, why in state.build_failures[:6])
         )
     # 下一个要试的墙格 + 它到基地的距离（对照上面 yellow 的包围盒即可看出是否出区）
-    pending = _wall_candidates(view, state, state.failed_build_cells)
+    pending = _wall_candidates(view, state, state.failed_build_cells, config)
     if pending:
         base_cells = tuple(view.base_cells())
         cell = pending[0]
@@ -214,13 +245,25 @@ def _any_weapon_cell_free(view: WorldView) -> bool:
 
 
 def _wall_candidates(
-    view: WorldView, state: EconomyState, failed: set[Cell]
+    view: WorldView,
+    state: EconomyState,
+    failed: set[Cell],
+    config: Config | None = None,
 ) -> tuple[Pos, ...]:
     """围墙候选：跳过硬性失败格，也跳过「整圈都非法」的那一环。
 
     为什么按「环」跳过：真机实测 12 次探路**全部失败**却都落在同一圈上，把当天额度
     烧光也没摸到真实黄区。既然同一圈连错 2 次，这一圈大概率整圈不是黄区，应该立刻
     往外推进，而不是把剩余额度都花在它身上。
+
+    优先级（``build.wall_breach_first``，默认开）：
+
+    1. **破口**（记忆里砌过、现在不是墙）—— 敌人已经证明这条路走得通，先堵它；
+    2. **缺口**（墙线上两侧已有 ≥ 2 面墙的空格）—— 进程重启丢了记忆时的兜底；
+    3. 其余照旧按「方环由内向外 + 面分档」。
+
+    这样即使破口落在背面（``wall_line`` 因 ``tier is None`` 不收录它），也会被排到
+    最前面重建 —— 旧实现只按环序铺，背面破口永远轮不到。
     """
     base_cells = tuple(view.base_cells())
     line = [
@@ -234,7 +277,97 @@ def _wall_candidates(
             or min(chebyshev(c, b) for b in base_cells) not in state.wall_refuted_dist
         )
     ]
-    return tuple(line)[: _wall_target(view, state) + len(failed)]
+    ordered = _prioritized_line(view, state, line, config)
+    return tuple(ordered)[: _wall_target(view, state, config) + len(failed)]
+
+
+def _prioritized_line(
+    view: WorldView,
+    state: EconomyState,
+    line: list[Pos],
+    config: Config | None,
+) -> list[Pos]:
+    """把「破口 → 缺口 → 正常环序」排成一条候选序列（去重，保序）。"""
+    if not _flag(config, "build.wall_breach_first", WALL_BREACH_FIRST):
+        return list(line)
+    ordered: list[Pos] = []
+    seen: set[Pos] = set()
+    for cell in (*_breach_cells(view, state), *_gap_cells(view, state, line, config), *line):
+        if cell in seen:
+            continue
+        seen.add(cell)
+        ordered.append(cell)
+    return ordered
+
+
+def _base_dist(view: WorldView, pos: Pos) -> int:
+    """到己方基地块的切比雪夫距离（无基地 → 0）。"""
+    base_cells = tuple(view.base_cells())
+    if not base_cells:
+        return 0
+    return min(chebyshev(pos, cell) for cell in base_cells)
+
+
+def _breach_cells(view: WorldView, state: EconomyState) -> tuple[Pos, ...]:
+    """破口 = 我们砌过、现在已不是墙、且仍可施工的格（按到基地距离升序）。
+
+    三个排除各有理由：**已被证伪**（建过又失败，说明推断黄区变了）不再浪费石头；
+    **已被占据**（原地又插了武器/站着敌人）不能重砌；**不在黄区**则根本建不了。
+    剩下的就是「被打掉的墙」，重建成本 1 石头、收益是挡住机器人一夜的推进。
+    """
+    live = {wall.pos for wall in view.own_walls()}
+    yellow = view.yellow_build_cells()
+    holes = []
+    for cell in sorted(state.wall_memory):
+        pos = Pos(*cell)
+        if pos in live or cell in state.failed_build_cells:
+            continue
+        if pos not in yellow or _occupied(view, pos):
+            continue
+        holes.append(pos)
+    return tuple(sorted(holes, key=lambda c: (_base_dist(view, c), c.x, c.y)))
+
+
+def _gap_cells(
+    view: WorldView,
+    state: EconomyState,
+    line: list[Pos],
+    config: Config | None,
+) -> tuple[Pos, ...]:
+    """无记忆时的兜底缺口：墙线上「两侧已有 ≥ N 面墙」的空格。
+
+    为什么要有这条：``wall_memory`` 只活在进程内，重启/换进程后记忆为空，破口就退化
+    成一个普通的环序候选。但破口在几何上有明显特征 —— 左右（八邻域）至少两面墙已
+    经立着，中间空一格。用它就能在零记忆下认出「这里本该有墙」。
+    """
+    minimum = max(2, _int_config(config, "build.wall_gap_min_walls", WALL_GAP_MIN_WALLS))
+    live = {wall.pos for wall in view.own_walls()}
+    gaps = []
+    for cell in line:
+        built = sum(1 for dx, dy in _NEIGHBORS if Pos(cell.x + dx, cell.y + dy) in live)
+        if built >= minimum:
+            gaps.append(cell)
+    return tuple(gaps)
+
+
+def _damaged_walls(view: WorldView, config: Config | None) -> int:
+    """残血（未毁）围墙数：这些该用修复包（10 金回满），而不是花石头重砌。
+
+    阈值取 ``consumables.wall_hp_ratio``（与消耗品模块同源）—— 两边必须用同一个判定，
+    否则会出现「日志说要修、消耗品却不修」的错觉。
+    """
+    ratio = _float_config(config, "consumables.wall_hp_ratio", WALL_HP_RATIO)
+    return sum(1 for wall in view.own_walls() if wall.health <= 1000 * ratio)
+
+
+def _wall_fix_note(view: WorldView, state: EconomyState, config: Config | None) -> str:
+    """D-02 的 ``wall_fix=breach(N)|gap(G)|repair(M)`` 字段（见 ``_diagnose``）。"""
+    line = list(wall_line(view, None, None, None, _threat_dir(view, state)))
+    return (
+        f"breach({len(_breach_cells(view, state))})"
+        f"|gap({len(_gap_cells(view, state, line, config))})"
+        f"|repair({_damaged_walls(view, config)})"
+    )
 
 
 def _zone_box(cells: frozenset[Pos]) -> str:
@@ -259,7 +392,7 @@ def _wall_gate(view: WorldView, config: Config | None, state: EconomyState) -> s
     prefix = f"first={mode},quota={_stone_quota(view, state, config)}:"
     if not _flag(config, "build.wall_enabled", True):
         return prefix + "disabled"
-    if len(view.own_walls()) >= _wall_target(view, state):
+    if len(view.own_walls()) >= _wall_target(view, state, config):
         return prefix + "done"
     if not state.wall_confirmed:
         if not _wall_ready(view, state, config):
@@ -269,7 +402,7 @@ def _wall_gate(view: WorldView, config: Config | None, state: EconomyState) -> s
             start = _int_config(config, "build.wall_probe_from", WALL_PROBE_FROM)
             now = (view.round_no - 1) % DAY_LENGTH
             return prefix + f"wait_window(r{now}<r{start})"
-    if not _wall_line_free(view, state):
+    if not _wall_line_free(view, state, config):
         return prefix + "line_empty"
     return prefix + "ok"
 
@@ -301,15 +434,14 @@ def _mine_note(
     return ",".join(bits) or "-"
 
 
-def _wall_line_free(view: WorldView, state: EconomyState) -> bool:
-    """围墙防线里是否还剩可施工的格（空 → 不可能再建墙）。"""
-    return any(
-        not _occupied(view, c)
-        for c in wall_line(
-            view, None, None, _occupied_and_failed(view, state.failed_build_cells),
-            _threat_dir(view, state),
-        )
-    )
+def _wall_line_free(view: WorldView, state: EconomyState, config: Config | None = None) -> bool:
+    """围墙防线里是否还剩可施工的格（空 → 不可能再建墙）。
+
+    这里直接问「候选序列是否为空」而不是重新过滤一遍 ``wall_line``：破口可能落在
+    背面（不在 ``wall_line`` 里），旧写法会误报 ``line_empty``，让线上日志看起来
+    「没活可干」，实际还有一整面墙要补。
+    """
+    return bool(_wall_candidates(view, state, state.failed_build_cells, config))
 
 
 def _record_build_attempts(
@@ -357,12 +489,16 @@ def _work_orders(
         cells = standable_cells(view, view.blue_build_cells())
         builder = _nearest_worker(workers, cells).id if cells else workers[0].id
         state.builder_id = builder
-    if _weapons_done(
-        view, config, max_weapons
-    ) and _stone_pipeline(view, state, config, "build", workers[0]):
+    if (
+        _weapons_done(view, config, max_weapons)
+        and _stone_pipeline(view, state, config, "build", workers[0])
+        and not needs_wall_fixer(view, config)
+    ):
         # 武器已插满 + 墙管道可用：两人都是「建造者」，谁都可能被派去砌墙。
         # 注意必须同时看管道是否真的开着（有石矿、还有墙要修），否则无矿场景下
         # 全队会一起发呆、连券都不去买（回归 test_buys_*_voucher）。
+        # 「有残血墙且队里没修复包」时**不**全队并入墙线：必须留一个人去商店买包
+        # （修复包 10 金，到店即买），否则白天修墙这条线永远缺工具。
         return {w.id: "build" for w in workers}
     orders[builder] = "build"
     shop = _shopper(view, workers, orders[builder], max_weapons, state, config)
@@ -419,7 +555,7 @@ def _wall_ready(view: WorldView, state: EconomyState, config: Config | None) -> 
     """
     if not _flag(config, "build.wall_enabled", True):
         return False
-    if len(view.own_walls()) >= _wall_target(view, state):
+    if len(view.own_walls()) >= _wall_target(view, state, config):
         return False
     if state.wall_confirmed:
         return True
@@ -437,7 +573,7 @@ def _stone_quota(view: WorldView, state: EconomyState, config: Config | None) ->
     batch = _int_config(config, "build.wall_stone_batch", WALL_STONE_BATCH)
     hands = max(1, len(view.own_workers()))
     reserve = max(0, _int_config(config, "economy.stone_reserve", STONE_RESERVE))
-    remaining = max(0, _wall_target(view, state) - len(view.own_walls()))
+    remaining = max(0, _wall_target(view, state, config) - len(view.own_walls()))
     return min(remaining, max(batch * hands, reserve))
 
 
@@ -454,7 +590,7 @@ def _stone_reserve(view: WorldView, state: EconomyState, config: Config | None) 
         return 0  # 不修墙就不必留石头，全部可以换钱
     if _flag(config, "build.wall_first", WALL_FIRST):
         return _stone_quota(view, state, config)
-    remaining = max(0, _wall_target(view, state) - len(view.own_walls()))
+    remaining = max(0, _wall_target(view, state, config) - len(view.own_walls()))
     cap = _int_config(config, "economy.stone_reserve", STONE_RESERVE)
     return min(remaining, max(0, cap))
 
@@ -480,7 +616,7 @@ def _stone_pipeline(
         return False
     if not _flag(config, "build.wall_enabled", True):
         return False
-    if len(view.own_walls()) >= _wall_target(view, state):
+    if len(view.own_walls()) >= _wall_target(view, state, config):
         return False
     if not view.mines("stone"):
         return False  # 没石矿 → 这条管道走不通，交回原有优先级
@@ -525,15 +661,21 @@ def _shopper(
     20 金的围墙券（用户取舍：**墙 > 武器升级**）。不抢全队人手是硬条件 ——
     两个工人同时走掉，墙与石头就都停了；所以只在「除采购者外还有别人在墙线上」
     时才放行，否则宁可先砌墙、回头再买券。
+
+    另一条放行理由：**墙被打残、队里又没有修复包**（``consumables.needs_wall_fixer``）。
+    修复包只要 10 金，是全场最便宜的止损；但消耗品模块只会在「人已经站在商店旁」
+    时买，而旧实现里没人会为它专程跑一趟 —— 于是残血墙永远等不到修复包（线上金币
+    常年在 10~20，20 金的围墙券也买不起，商店这条线整局没人去）。
     """
     if len(view.own_weapons()) < max_weapons and not _flag(
         config, "build.wall_first", WALL_FIRST
     ):
         return None
     voucher = affordable_voucher(view, view.gold(), config)
-    if voucher is None:
-        return None  # 没有「买得起又用得到」的券（20 金围墙券也算）就别派人去商店
-    if not _wall_upgrade_voucher(voucher):
+    need_fixer = needs_wall_fixer(view, config)
+    if voucher is None and not need_fixer:
+        return None  # 既没有「买得起又用得到」的券，也没有残血墙要修 → 别派人去商店
+    if voucher is not None and not _wall_upgrade_voucher(voucher):
         # 武器/基地券：本来就要求武器建满，闸门见上
         if len(view.own_weapons()) < max_weapons:
             return None
@@ -577,7 +719,7 @@ def _spare_wall_hand(
     一整批石头（马上会去墙线）。两人规模下，这条就是「不许两人同时离开工地」。
     """
     batch = _int_config(config, "build.wall_stone_batch", WALL_STONE_BATCH)
-    line = frozenset(_wall_candidates(view, state, state.failed_build_cells))
+    line = frozenset(_wall_candidates(view, state, state.failed_build_cells, config))
     return any(
         w.backpack.count("stone") >= batch
         or any(chebyshev(w.pos, cell) == 1 for cell in line)
@@ -610,6 +752,11 @@ def _plan_worker(
         if plan is not None:
             return plan
         # 武器建满 / 金币不足 / 无可用格 → 建造者转去铺墙，别闲着
+    if _fixer_repair_first(view, config, worker):
+        # 手里有修复包且身旁就是残血围墙：本回合什么都不发，让 plan_consumables 的
+        # `use WallFixer` 落地。经济指令永远先占住角色（planner 用 setdefault 合并），
+        # 不主动让路的话修复包会一直躺在背包里 —— 与升级券「use 被吞」是同一个坑。
+        return None, None
     action, target = voucher_trip(view, worker, config)
     if action == "use":
         # 本回合什么都不发，让 plan_upgrades 的 use 指令落地（否则被经济指令盖掉）
@@ -659,6 +806,13 @@ def _plan_worker(
     return _plan_collect(worker, _preferred_mine(view, worker, order, mine, need_stone))
 
 
+def _fixer_repair_first(view: WorldView, config: Config | None, worker: Role) -> bool:
+    """这名工人本回合是否该让路给「用修复包修墙」（见 ``_plan_worker`` 调用处）。"""
+    if "WallFixer" not in worker.backpack:
+        return False
+    return wall_fixer_target(view, worker, config) is not None
+
+
 def _line_already_held(
     view: WorldView, state: EconomyState, config: Config | None, worker: Role
 ) -> bool:
@@ -676,7 +830,7 @@ def _line_already_held(
     ]
     if not pending:
         return False
-    line = frozenset(_wall_candidates(view, state, state.failed_build_cells))
+    line = frozenset(_wall_candidates(view, state, state.failed_build_cells, config))
     if not line:
         return False
 
@@ -786,7 +940,7 @@ def _plan_build_wall(
     failed = state.failed_build_cells
     if worker.backpack.count("stone") < WALL_COST:
         return None
-    line = _wall_candidates(view, state, failed)
+    line = _wall_candidates(view, state, failed, config)
     if not line:
         return None
     cells = frozenset(line)
@@ -799,13 +953,20 @@ def _plan_build_wall(
     return None, _nearest_cell(worker, cells, rank)
 
 
-def _wall_target(view: WorldView, state: EconomyState) -> int:
-    """本局围墙目标数：U 形防线长度，上限 ``build.wall_max``（默认 12）。"""
-    return min(len(wall_line(view, None, None, None, _threat_dir(view, state))), WALL_MAX)
+def _wall_target(view: WorldView, state: EconomyState, config: Config | None = None) -> int:
+    """本局围墙目标数：U 形防线长度 + 背面破口，上限 ``build.wall_max``（默认 12）。
+
+    为什么把背面破口也算进来：目标数是「还剩多少活」的闸门（``_wall_ready`` /
+    ``_stone_pipeline`` 都拿它和现有墙数比）。若只数三面墙，一旦三面铺满、背面被打
+    掉一格，目标数就等于现有墙数 → 闸门关闭 → 那个破口**永远不会被重建**。
+    """
+    line = wall_line(view, None, None, None, _threat_dir(view, state))
+    extra = sum(1 for cell in _breach_cells(view, state) if cell not in frozenset(line))
+    return min(len(line) + extra, WALL_MAX)
 
 
 def _threat_dir(view: WorldView, state: EconomyState) -> tuple[int, int] | None:
-    """来袭方向（八方向之一），**首次判定后锁定**。
+    """来袭方向（八方向之一），**首次判定后锁定**（可被背面破口推翻）。
 
     用户实测：机器人浪潮从基地的**一侧**刷出，因此围墙只围三面（来袭面 + 两侧），
     背面不建 —— 既省石头，也不会把自己人围死。
@@ -813,6 +974,9 @@ def _threat_dir(view: WorldView, state: EconomyState) -> tuple[int, int] | None:
     判定顺序：① 场上以我方为目标的机器人质心（真机第一晚后即有观测）；
     ② 敌方基地方向（基地位置全局可见，且通常就是机器人来袭方向）；
     ③ 暂无信息 → None（退化为四面全建）。
+
+    「锁定」的代价：一旦判错，背面永远不建墙（旧实现的死结）。修正入口见
+    :func:`_rearm_threat_dir` —— 只有「破口出现在背面」这种明确矛盾才允许改写。
     """
     if state.wall_dir is not None:
         return state.wall_dir
@@ -837,19 +1001,61 @@ def _threat_dir(view: WorldView, state: EconomyState) -> tuple[int, int] | None:
     return state.wall_dir
 
 
+def _rearm_threat_dir(
+    view: WorldView, state: EconomyState, config: Config | None
+) -> None:
+    """背面出现破口 → 推翻锁定的来袭方向（``build.wall_breach_rearm_threat``）。
+
+    为什么必须允许改写：锁定的方向若判错，我们**故意不建**的那一面就是敞开的，敌人
+    从那里打进来、打掉我们早先建的墙 —— 这正是「破口落在背面」的含义。此时破口本身
+    就是最硬的证据（比机器人质心更可信，它证明敌人真的从那一侧来了）。
+
+    为什么不会每回合抖动：只有 ``wall_side_tier(...) is None``（当前方向下的背面）才
+    触发；改完方向后这一格就变成正面（tier 0），不会再次触发。同一回合内只改一次。
+    """
+    if not _flag(config, "build.wall_breach_rearm_threat", WALL_BREACH_REARM_THREAT):
+        return
+    if state.wall_dir is None:  # 还没锁定过方向 → 无需推翻（本来就四面全建）
+        return
+    base = base_center(view)
+    if base is None or not view.base_cells():
+        return
+    for pos in _breach_cells(view, state):
+        if wall_side_tier(view, pos, state.wall_dir) is not None:
+            continue  # 破口在正面/侧面：方向判断没问题
+        dx = (pos.x > base.x) - (pos.x < base.x)
+        dy = (pos.y > base.y) - (pos.y < base.y)
+        if (dx, dy) == (0, 0):
+            continue
+        state.wall_dir = (dx, dy)
+        state.threat_rearms += 1
+        state.notes.append(f"breach_rearm=({dx},{dy})@({pos.x},{pos.y})")
+        return
+
+
 # ------------------------------------------------------------------ 采卖 / 升级
 
 
 def _plan_shopping(
     view: WorldView, worker: Role, config: Config | None = None
 ) -> tuple[RoleCommand | None, Pos | None] | None:
-    """前往武器商店买券（到店即买）：按性价比挑，20 金围墙券优先于 100 金武器券。"""
-    voucher = affordable_voucher(view, view.gold(), config)
-    if voucher is None:
-        return None
+    """前往武器商店买券（到店即买）：按性价比挑，20 金围墙券优先于 100 金武器券。
+
+    买不起任何券时如果**有残血围墙且队里没修复包**，照样朝商店走 —— 修复包只要
+    10 金，是这条采购线上唯一真正买得起的止损手段（旧实现没有券就不去商店，
+    于是残血墙永远等不到修复包）。到店后不在这里下单：``consumables`` 会在紧贴
+    商店时发 ``buy``，两处各发一次就变成重复购买。
+    """
     shop = view.weapon_shop_pos()
     if shop is None:
         return None
+    voucher = affordable_voucher(view, view.gold(), config)
+    if voucher is None:
+        if not needs_wall_fixer(view, config):
+            return None
+        if chebyshev(worker.pos, shop) <= 1:
+            return None  # 已到店：让 plan_consumables 下单买修复包
+        return None, shop
     if chebyshev(worker.pos, shop) <= 1:
         return RoleCommand(action=Action.BUY, name=voucher, num=1), None
     return None, shop
@@ -973,12 +1179,17 @@ def _send_home(
 
 
 def _digest_feedback(view: WorldView, state: EconomyState) -> None:
-    """上回合建造目标没变成建筑 → 该格非法，拉黑。
+    """上回合建造目标没变成建筑 → 该格非法，拉黑；同时维护「墙位记忆」。
 
     判题器对非法建造只回 ``false``，而非法的最常见原因就是**可建造区推断错了**；
     直接看「目标格上现在有没有对应建筑」比读动作结果更可靠（结果位还可能被
     同回合的移动结算覆盖）。不修正推断，工人会在同一个非法格上无限重试。
+
+    墙位记忆为什么两路都记（本回合确认 + 每回合同步活墙）：判题器只给当前快照，
+    墙被打掉后快照里没有任何痕迹，必须自己留档。同步活墙是廉价的自我修复 —— 记忆
+    意外丢失（重启/异常）时也能在下一次扫描里重新认识现有围墙。
     """
+    state.wall_memory.update((wall.pos.x, wall.pos.y) for wall in view.own_walls())
     base_cells = tuple(view.base_cells())
     for uid, (cell, is_wall) in list(state.pending_build.items()):
         pos = Pos(*cell)
@@ -995,6 +1206,7 @@ def _digest_feedback(view: WorldView, state: EconomyState) -> None:
                     state.wall_refuted_dist.add(dist)
         elif is_wall:
             state.wall_confirmed = True  # 找到过合法墙位 → 放开施工
+            state.wall_memory.add(cell)  # 这块墙是我们砌的：日后不在了就是破口
         state.pending_build.pop(uid, None)
 
 
@@ -1097,3 +1309,11 @@ def _weapon_plan(config: Config | None, index: int) -> str:
 def _int_config(config: Config | None, key: str, default: int) -> int:
     value = config.get(key) if config is not None else None
     return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def _float_config(config: Config | None, key: str, default: float) -> float:
+    """读浮点旋钮；缺失/类型不对就回退代码兜底常量（与 config 默认值同值）。"""
+    value = config.get(key) if config is not None else None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return default

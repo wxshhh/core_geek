@@ -11,7 +11,10 @@
 | 眩晕法宝 DizzyWeapon | 100 | 目标 3×3 内 ≥ ``consumables.dizzy_min_robots``（默认 3）只机器人 | §4.6.3：眩晕 5 回合，期间它们不动不打，我方白打 5 回合 |
 
 购买只发生在**白天**（夜晚角色要操控武器，走开一座武器就少一轮输出），
-且保留 ``economy.emergency_reserve`` 应急金。仅用标准库。
+且保留 ``economy.emergency_reserve`` 应急金 —— **修复包除外**：墙已被打残说明防线正在
+崩，它只用 ``consumables.wall_fixer_reserve``（默认 0）这一道单独的预留，否则在金币
+常年 10~20 的墙优先模式里根本买不起（线上实测：整局没买过一个修复包）。另外
+``economy._shopper`` 会在「有残血墙且队里没包」时派一个人专程去商店买。仅用标准库。
 """
 
 from __future__ import annotations
@@ -39,6 +42,10 @@ WALL_HP_RATIO: Final = 0.4
 BOMB_MIN_ROBOTS: Final = 2
 DIZZY_MIN_ROBOTS: Final = 3
 DEFAULT_RESERVE: Final = 100
+# 与 config 默认值一致：买修复包时单独留的应急金（0 = 不受 economy.emergency_reserve
+# 的 100 金约束）。墙被打残是**明确矛盾**，10 金立刻止损比留着钱等武器划算得多；
+# 旧实现共用 100 金预留，而墙优先模式的金币常年在 10~20 → 修复包整局买不到。
+WALL_FIXER_RESERVE: Final = 0
 _AOE_RADIUS: Final = 1  # 「3x3」= 切比雪夫距离 ≤1（§4.6.3）
 
 
@@ -80,7 +87,7 @@ def _use_command(
     """用掉手里的消耗品：修墙 → 回血 → 炸弹 → 眩晕（顺序=收益从确定到不确定）。"""
     backpack = set(unit.backpack)
     if WALL_FIXER in backpack:
-        target = _damaged_wall(view, unit, config)
+        target = wall_fixer_target(view, unit, config)
         if target is not None:
             return RoleCommand(action=Action.USE, name=WALL_FIXER, targetPos=(target,))
     if MEDICINE in backpack and _hurt(unit, config):
@@ -102,14 +109,18 @@ def _use_command(
 def _buy_commands(
     view: WorldView, config: Config | None, state: ConsumableState
 ) -> dict[int, RoleCommand]:
-    """武器建满且防线铺完后，把余钱换成救命道具（只花超出应急金的部分）。"""
+    """把余钱换成救命道具（残血围墙优先；其余只花超出应急金的部分）。
+
+    为什么给修复包单开一条路：旧实现把「武器建满 3 座」和 ``economy.emergency_reserve``
+    （默认 100 金）当成所有消耗品的共同闸门，而墙优先模式下金币常年在 10~20 —— 结果
+    是**整局没人买过修复包**（买包逻辑存在，但两个条件永远同时不成立）。现在只要
+    「有残血围墙 + 队伍里没有修复包 + 买得起（单独预留 ``consumables.wall_fixer_reserve``，
+    默认 0）」，武器没满也照样派人去买：10 金换一堵墙回满，是夜里最便宜的止损。
+    """
     max_weapons = _int_knob(config, "build.day1_max_weapons", 3)
-    if len(view.own_weapons()) < max_weapons:
-        return {}
-    reserve = _int_knob(config, "economy.emergency_reserve", DEFAULT_RESERVE)
-    available = view.gold() - reserve
-    if available < MEDICINE_COST:
-        return {}
+    urgent_wall = needs_wall_fixer(view, config)
+    if len(view.own_weapons()) < max_weapons and not urgent_wall:
+        return {}  # 武器没建满且墙没被打残 → 一分钱都不花（先武器）
     shop = view.weapon_shop_pos()
     if shop is None:
         return {}
@@ -117,6 +128,12 @@ def _buy_commands(
         (r for r in view.own_workers() if chebyshev(r.pos, shop) <= 1), None
     )
     if buyer is None:
+        return {}
+    if urgent_wall:
+        return _buy(buyer, WALL_FIXER, state)
+    reserve = _int_knob(config, "economy.emergency_reserve", DEFAULT_RESERVE)
+    available = view.gold() - reserve
+    if available < MEDICINE_COST:
         return {}
     if _count(view, MEDICINE) == 0 and any(_hurt(r, config) for r in _mobile(view)):
         return _buy(buyer, MEDICINE, state)
@@ -127,6 +144,32 @@ def _buy_commands(
     if _count(view, DIZZY) == 0 and available >= DIZZY_COST:
         return _buy(buyer, DIZZY, state)
     return {}
+
+
+def _wall_hurt(wall: Role, config: Config | None) -> bool:
+    """这面墙是否已残血到该用修复包（阈值 ``consumables.wall_hp_ratio``）。"""
+    ratio = _float_knob(config, "consumables.wall_hp_ratio", WALL_HP_RATIO)
+    return wall.health <= 1000 * ratio
+
+
+def _fixer_reserve(config: Config | None) -> int:
+    """买修复包时要留的应急金（``consumables.wall_fixer_reserve``，默认 0）。"""
+    return max(0, _int_knob(config, "consumables.wall_fixer_reserve", WALL_FIXER_RESERVE))
+
+
+def needs_wall_fixer(view: WorldView, config: Config | None = None) -> bool:
+    """是否该去**买**一个修复包：有残血围墙、队里还没有包、且买得起。
+
+    公开给经济模块用（``economy._shopper`` 要为它专程派一个人去商店）。买与用必须
+    共用同一套判定，否则会出现「经济以为有人会买、消耗品却因为预留金不足而不买」。
+    """
+    if not view.own_walls():
+        return False
+    if _count(view, WALL_FIXER) > 0:
+        return False  # 队里已有包：先用掉，别重复买（10 金也是钱）
+    if not any(_wall_hurt(wall, config) for wall in view.own_walls()):
+        return False
+    return view.gold() - _fixer_reserve(config) >= WALL_FIXER_COST
 
 
 def _buy(buyer: Role, item: str, state: ConsumableState) -> dict[int, RoleCommand]:
@@ -156,12 +199,18 @@ def _max_hp(unit: Role) -> int:
     return {"worker": 220, "pioneer": 200}.get(str(unit.roleType), 200)
 
 
-def _damaged_wall(view: WorldView, unit: Role, config: Config | None) -> Pos | None:
-    ratio = _float_knob(config, "consumables.wall_hp_ratio", WALL_HP_RATIO)
+def wall_fixer_target(
+    view: WorldView, unit: Role, config: Config | None = None
+) -> Pos | None:
+    """身旁最该修的那面残血墙（无 → ``None``）。
+
+    公开入口：经济模块要让路（``economy._fixer_repair_first``），判定必须与这里
+    完全一致，否则会出现「经济以为消耗品会用、消耗品却找不到目标」而白站一回合。
+    """
     candidates = [
         wall
         for wall in view.own_walls()
-        if chebyshev(wall.pos, unit.pos) <= 1 and wall.health <= 1000 * ratio
+        if chebyshev(wall.pos, unit.pos) <= 1 and _wall_hurt(wall, config)
     ]
     if not candidates:
         return None

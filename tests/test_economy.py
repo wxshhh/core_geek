@@ -505,6 +505,133 @@ def test_wall_first_mode_buys_wall_voucher_before_weapons_are_maxed() -> None:
     assert buys[0].name == "WallUpgradeVoucher1", buys[0].name
 
 
+def test_breach_cell_is_rebuilt_before_normal_ring_order() -> None:
+    """Given 记忆里 (20,18) 是我们砌过的墙位、但现在那里没有墙（夜里被打掉），
+    When 规划经济，Then 该破口排在正常「方环由内向外」候选之前，工人直接去重建。
+
+    回归用户需求：夜晚墙被攻破后白天要**先补破口**。破口是全场唯一被敌人用行动
+    证明过能打通的位置（机器人夜里沿同一条路再来），按纯环序铺墙会先去砌别的格。
+    """
+    from future_war.strategy.economy import _wall_candidates
+
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(10010, "worker", 20, 17, 220, backpack=["stone"] * 3),
+    ]
+    view = _view(roles)
+    plain = EconomyState()  # 无记忆的对照
+    plain.wall_dir = (1, 0)  # 来袭方向朝东 → 破口 (20,18) 在北面（侧面），环序里靠后
+    state = EconomyState(wall_memory={(20, 18)})
+    state.wall_dir = (1, 0)
+
+    # 对照：没有记忆时 (20,18) 只是普通候选，第一个要砌的不是它
+    assert Pos(20, 18) in _wall_candidates(view, plain, set())
+    assert _wall_candidates(view, plain, set())[0] != Pos(20, 18)
+    # 有记忆 → 破口被排到最前
+    assert _wall_candidates(view, state, set())[0] == Pos(20, 18)
+
+    cmd = plan_economy(view, None, state)[10010]
+    assert enum_to_str(cmd.action) == "build"
+    assert cmd.name == "wall"
+    assert cmd.targetPos == (Pos(20, 18),)
+    assert any("wall_fix=breach(1)" in note for note in state.notes), state.notes
+
+
+def test_breach_on_back_side_rearms_threat_dir() -> None:
+    """Given 锁定的来袭方向是东、而破口出现在西侧（我们故意不建墙的背面），
+    When 规划经济，Then 用破口位置覆盖来袭方向，并记一条 breach_rearm 诊断。
+
+    锁定的方向判错就会让背面永久敞开（旧实现的死结）。破口是比机器人质心更硬的
+    证据；同时要求不会每回合抖动 —— 改完方向后该格变成正面，不再触发。
+    """
+    from future_war.strategy.builder import wall_side_tier
+
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(10010, "worker", 19, 20, 220, backpack=["stone"] * 3),
+    ]
+    view = _view(roles)
+    state = EconomyState(wall_memory={(18, 20)})
+    state.wall_dir = (1, 0)
+    # 前提：在旧方向下 (18,20) 确实被判为背面（tier=None，不建）
+    assert wall_side_tier(view, Pos(18, 20), (1, 0)) is None
+
+    plan_economy(view, None, state)
+    assert state.wall_dir == (-1, 0), "背面破口必须推翻来袭方向"
+    assert state.threat_rearms == 1
+    assert any(note.startswith("breach_rearm=") for note in state.notes), state.notes
+
+    plan_economy(view, None, state)  # 再来一回合：方向已指向破口，不该再改
+    assert state.wall_dir == (-1, 0)
+    assert state.threat_rearms == 1
+
+
+def test_gap_cell_is_detected_without_wall_memory() -> None:
+    """Given 进程重启后没有任何墙位记忆，但墙线上 (23,20) 的左右两侧
+    (23,19)/(23,21) 都已是己方围墙，When 规划经济，Then 该格被当作缺口优先重建。"""
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(40001, "wall", 23, 19, 1000, level=1),
+        _role(40002, "wall", 23, 21, 1000, level=1),
+        _role(10010, "worker", 22, 20, 220, backpack=["stone"] * 3),
+    ]
+    view = _view(roles, gold=0)
+    state = EconomyState()  # 零记忆
+    state.wall_dir = (1, 0)
+
+    cmd = plan_economy(view, None, state)[10010]
+    assert enum_to_str(cmd.action) == "build"
+    assert cmd.targetPos == (Pos(23, 20),), "两侧都有墙的空格 = 缺口，优先补"
+    assert any("wall_fix=breach(0)|gap(1)" in note for note in state.notes), state.notes
+
+
+def test_damaged_wall_worker_yields_turn_to_wall_fixer() -> None:
+    """Given 工人背包里有修复包且身旁围墙残血（未毁），When 规划整回合，
+    Then 该角色发出 use WallFixer（残血 → 用维修包；已毁才是花 1 石头重建）。
+
+    经济指令永远先占住角色（planner 用 setdefault 合并），所以经济必须主动让路，
+    否则修复包会一直躺在背包里 —— 与升级券「use 被吞」是同一个坑。
+    """
+    from future_war.strategy.planner import plan_turn
+
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(40003, "wall", 20, 22, 300, level=1),
+        _role(10010, "worker", 20, 21, 220, backpack=["WallFixer"]),
+    ]
+    view = _view(roles)
+
+    cmd = plan_turn(view, None).commands[10010]
+    assert enum_to_str(cmd.action) == "use"
+    assert cmd.name == "WallFixer"
+    assert cmd.targetPos == (Pos(20, 22),)
+
+
+def test_shopper_is_sent_to_buy_wall_fixer_when_wall_damaged() -> None:
+    """Given 墙优先模式、一面墙残血、队里没有修复包、只有 10 金（买不起任何升级券），
+    When 规划经济，Then 留一人朝武器商店走 —— 到店即买 10 金修复包。
+
+    旧实现里没有可买的券就没人去商店（修复包 10 金却整局没人买过），白天这条
+    「修被打残的墙」的路就永远缺工具。
+    """
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(10040, "railgun", 22, 22, 1000, level=1, attackPower=10, attackRange=6),
+        _role(10041, "rocket", 24, 22, 1000, level=1, attackPower=20, attackRange=10),
+        _role(10042, "gatling", 26, 22, 1000, level=1, attackPower=10, attackRange=3),
+        _role(40003, "wall", 20, 22, 300, level=1),  # 残血：夜里挨过打
+        _role(10010, "worker", 19, 20, 220, backpack=["stone"] * 3),
+        _role(10012, "worker", 30, 30, 220, backpack=[]),
+    ]
+    view = _wall_first_view(roles=roles, zones=[_shop(32, 32), _mine(18, 18)], gold=10)
+    commands = plan_economy(view)
+
+    moves = [c for c in commands.values() if enum_to_str(c.action) == "move"]
+    assert any(
+        chebyshev(c.targetPos[0], Pos(32, 32)) == 1 for c in moves if c.targetPos
+    ), f"该有人专程去商店买修复包，实际 {[enum_to_str(c.action) for c in commands.values()]}"
+
+
 def main() -> int:
     """零依赖测试运行器：执行全部 test_* 函数并报告。"""
     test_funcs = [

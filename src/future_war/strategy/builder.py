@@ -255,6 +255,20 @@ def _side_tier(
     return 1
 
 
+def wall_side_tier(
+    view: WorldView,
+    cell: Pos,
+    direction: tuple[int, int] | None,
+) -> int | None:
+    """``_side_tier`` 的公开入口：0=来袭面 / 1=侧面 / ``None``=背面。
+
+    为什么要有公开入口：经济模块要拿「破口是否落在我们故意不建墙的背面」来**反证**
+    来袭方向判断错了（见 ``economy._rearm_threat_dir``）。判定规则必须与铺墙时完全
+    一致，否则会出现「判定说是在背面、铺墙却把它当正面」的自相矛盾。
+    """
+    return _side_tier(cell, base_center(view), _base_cells_of(view), direction)
+
+
 def _dominant_axis(direction: tuple[int, int]) -> str:
     """来袭方向的主轴（用于文档/调试；正负号已包含在 direction 里）。"""
     if direction[0] and direction[1]:

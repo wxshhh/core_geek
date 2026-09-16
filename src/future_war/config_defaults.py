@@ -29,6 +29,9 @@ DEFAULT_CONFIG: Final[dict[str, JsonValue]] = {
         "wall_probe_from": 0,
         "wall_stone_batch": 3,
         "wall_first": True,
+        "wall_breach_first": True,
+        "wall_breach_rearm_threat": True,
+        "wall_gap_min_walls": 2,
     },
     "combat": {
         "target_priority": ["boss", "large", "medium", "small"],
@@ -41,6 +44,7 @@ DEFAULT_CONFIG: Final[dict[str, JsonValue]] = {
     "consumables": {
         "medicine_hp_ratio": 0.5,
         "wall_hp_ratio": 0.4,
+        "wall_fixer_reserve": 0,
         "bomb_min_robots": 2,
         "dizzy_min_robots": 3,
     },

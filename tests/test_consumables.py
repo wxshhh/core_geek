@@ -241,6 +241,39 @@ def test_retreat_can_be_disabled() -> None:
     assert retreating_roles(view, config) == frozenset()
 
 
+def test_buys_wall_fixer_before_weapons_done_when_wall_hurt() -> None:
+    """Given 武器没建满（只有 1 座）、一面墙残血、队里没有修复包、只有 10 金，
+    When 工人在商店旁，Then 买修复包（10 金止损优先于留钱建武器）。
+
+    回归线上实测：修复包与其它道具共用 ``economy.emergency_reserve``（100 金），
+    而墙优先模式金币常年 10~20 → 整局没有买过一个修复包，残血墙只能眼睁睁被打掉。
+    """
+    roles = [
+        STATION,
+        _role(10040, "rocket", 21, 20, 1000, level=1, attackRange=10),
+        _role(40000, "wall", 22, 22, 300, level=1),  # 残血：夜里挨过打
+        _role(10010, "worker", 24, 20, 220, backpack=[]),
+    ]
+    state = ConsumableState()
+    commands = plan_consumables(_view(roles=roles, gold=10), None, state)
+    assert enum_to_str(commands[10010].action) == "buy"
+    assert commands[10010].name == "WallFixer"
+    assert state.bought.get("WallFixer") == 1
+
+
+def test_wall_fixer_reserve_blocks_buying() -> None:
+    """Given ``consumables.wall_fixer_reserve`` 抬到 10 金，When 手里正好 10 金且有残血墙，
+    Then 不买（预留金把修复包挡在预算之外，运维旋钮生效）。"""
+    roles = [
+        STATION,
+        _role(10040, "rocket", 21, 20, 1000, level=1, attackRange=10),
+        _role(40000, "wall", 22, 22, 300, level=1),
+        _role(10010, "worker", 24, 20, 220, backpack=[]),
+    ]
+    config = _config(wall_fixer_reserve=10)
+    assert plan_consumables(_view(roles=roles, gold=10), config) == {}
+
+
 def main() -> int:
     """零依赖测试运行器：执行全部 test_* 函数并报告。"""
     test_funcs = [
