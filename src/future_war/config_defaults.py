@@ -26,7 +26,7 @@ DEFAULT_CONFIG: Final[dict[str, JsonValue]] = {
         "wall_max": 12,
         "wall_enabled": True,
         "wall_probe_budget": 12,
-        "wall_probe_from": 45,
+        "wall_probe_from": 0,
     },
     "combat": {
         "target_priority": ["boss", "large", "medium", "small"],
@@ -80,6 +80,6 @@ DEFAULT_CONFIG: Final[dict[str, JsonValue]] = {
     },
     "llm": {"daily_quota": 3, "free_window_enabled": True},
     "nav": {"replan_interval": 5, "collision_avoidance": True},
-    "world": {"inference": {"blue_radius": 3, "yellow_radius": 6}},
+    "world": {"inference": {"blue_radius": 1, "yellow_radius": 2}},
     "features": {"replay_enabled": True, "metric_line_enabled": True},
 }

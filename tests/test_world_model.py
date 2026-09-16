@@ -196,13 +196,19 @@ def test_static_map_buildable_inference_geometry() -> None:
     static = view.static_map
     assert static.own_base == Pos(10, 24)
     assert static.enemy_base == Pos(30, 10)
-    # 蓝区（切比雪夫 ≤3）：距离 2 与 3 的格
-    assert static.can_build(Pos(13, 24), BuildableKind.WEAPON)  # 距离 2
-    assert static.can_build(Pos(14, 21), BuildableKind.WEAPON)  # 距离 3
+    # 基地是 2x2 绿区（10..11, 24..25）；**紧贴的一圈是蓝（到基地块距离 1）、
+    # 再外一圈是黄（距离 2）** —— 任务书 §4.1 配图，不是 1..3 / 4..6
+    assert static.can_build(Pos(12, 24), BuildableKind.WEAPON)  # 距离 1（右侧）
+    assert static.can_build(Pos(10, 23), BuildableKind.WEAPON)  # 距离 1（上侧）
+    assert static.can_build(Pos(12, 23), BuildableKind.WEAPON)  # 距离 1（对角）
+    assert not static.can_build(Pos(13, 24), BuildableKind.WEAPON)  # 距离 2 是黄区
+    assert not static.can_build(Pos(14, 21), BuildableKind.WEAPON)  # 距离 4 → 不可建
     # 黄区（4..6）：(14,20) 距离 4、(5,19) 距离 5
-    assert static.can_build(Pos(14, 20), BuildableKind.WALL)
-    assert static.can_build(Pos(5, 19), BuildableKind.WALL)
-    assert not static.can_build(Pos(14, 20), BuildableKind.WEAPON)  # 黄区不能建武器
+    assert static.can_build(Pos(13, 24), BuildableKind.WALL)  # 距离 2 是黄区
+    assert static.can_build(Pos(13, 23), BuildableKind.WALL)  # 距离 2 对角
+    assert static.can_build(Pos(10, 22), BuildableKind.WALL)
+    assert not static.can_build(Pos(13, 24), BuildableKind.WEAPON)  # 黄区不能建武器
+    assert not static.can_build(Pos(14, 21), BuildableKind.WALL)  # 距离 4 → 不可建
     # 排除：基地自身格 / 中立区域格（石矿 (4,24) 距离 6 也须被排除）/ 越界
     assert not static.can_build(Pos(10, 24), BuildableKind.WEAPON)
     assert not static.can_build(Pos(11, 25), BuildableKind.WALL)
@@ -492,7 +498,7 @@ def test_build_attempt_refutes_candidate_on_illegal() -> None:
     """Given 建造反馈为非法，When 下回合反馈到达，Then 候选格被证伪剔除。"""
     model = WorldModel()
     view1 = apply(model, make_request_data(1))
-    cell = Pos(13, 24)
+    cell = Pos(12, 24)  # 距离 1 的蓝区格
     assert view1.can_build(cell, BuildableKind.WEAPON)
     model.record_build_attempt(cell, BuildableKind.WEAPON, role_id=10010)
     view2 = apply(
@@ -500,9 +506,9 @@ def test_build_attempt_refutes_candidate_on_illegal() -> None:
     )
     assert not view2.can_build(cell, BuildableKind.WEAPON)
     # 合法反馈不证伪
-    model.record_build_attempt(Pos(14, 21), BuildableKind.WEAPON, role_id=10010)
+    model.record_build_attempt(Pos(10, 23), BuildableKind.WEAPON, role_id=10010)
     view3 = apply(model, make_request_data(3, action_results={10010: True}))
-    assert view3.can_build(Pos(14, 21), BuildableKind.WEAPON)
+    assert view3.can_build(Pos(10, 23), BuildableKind.WEAPON)
     assert not view3.can_build(cell, BuildableKind.WEAPON)  # 证伪持续生效
 
 
@@ -520,7 +526,7 @@ def test_team_switch_rebuilds_map() -> None:
     view2 = apply(model, data)
     assert view2.base_pos() == Pos(30, 10)
     assert "team_switch" in " ".join(view2.dynamic.fallbacks)
-    assert view2.static_map.can_build(Pos(27, 10), BuildableKind.WEAPON)
+    assert view2.static_map.can_build(Pos(29, 10), BuildableKind.WEAPON)  # 防守方距离 1
 
 
 def test_action_results_and_errors_surface() -> None:

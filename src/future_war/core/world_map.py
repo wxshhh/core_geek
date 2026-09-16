@@ -1,8 +1,8 @@
 """静态地图：中立区域分类 + 可建造区推断（工作包 9，方案 M2）。
 
-接口不下发可建造区（蓝=仅武器/黄=仅围墙，任务书 §4.1），只能从几何推断：
-以己方基地 2x2 块（基地 pos 为左上角，接口 §1.3.1 注）为中心，到块内任意格
-的切比雪夫距离 ≤ blue_radius 的候选为蓝区、≤ yellow_radius 且非蓝区的为黄区。
+接口不下发可建造区（蓝=仅武器/黄=仅围墙，任务书 §4.1）按**环**推断：基地是 2x2 绿色区域，
+**紧贴基地的一圈是蓝色（武器），再外一圈是黄色（围墙）**。即到基地块的切比雪夫
+距离 `1` = 蓝区、`2` = 黄区。
 排除：己方/敌方基地格、全部中立区域格（矿区/小贩/武器商店/任务点——§4.1
 矿区不会刷新在可建造区，二者互斥）、越界格、建造反馈证伪格（refuted）。
 
@@ -48,8 +48,8 @@ class BuildableKind(str, Enum):
 class BuildableInference:
     """可建造区推断参数（config world.inference.*）。"""
 
-    blue_radius: int = 3
-    yellow_radius: int = 6
+    blue_radius: int = 1
+    yellow_radius: int = 2
     refuted_weapon: frozenset[Pos] = frozenset()
     refuted_wall: frozenset[Pos] = frozenset()
 

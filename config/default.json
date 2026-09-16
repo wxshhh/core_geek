@@ -31,7 +31,7 @@
     "wall_max": 12,
     "wall_enabled": true,
     "wall_probe_budget": 12,
-    "wall_probe_from": 45
+    "wall_probe_from": 0
   },
   "combat": {
     "target_priority": [
@@ -102,8 +102,8 @@
   },
   "world": {
     "inference": {
-      "blue_radius": 3,
-      "yellow_radius": 6
+      "blue_radius": 1,
+      "yellow_radius": 2
     }
   }
 }
