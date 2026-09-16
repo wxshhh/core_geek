@@ -82,7 +82,11 @@ def test_metric_fields_derivation() -> None:
     assert fields["baseHP"] == 1500
     assert fields["rolesAlive"] == 2
     assert fields["errors"] == 1
+    # 判题请求没有击杀字段：如实保持 None（渲染 -），不猜数
     assert fields["kills"] is None
+    # 没有上一回合分数时，环比差值同样不可得
+    assert fields["scoreDelta"] is None
+    assert metric_fields(SAMPLE_REQUEST, previous_score=250)["scoreDelta"] == 30
 
 
 def test_metric_fields_tolerate_missing_and_wrong_types() -> None:
@@ -90,6 +94,7 @@ def test_metric_fields_tolerate_missing_and_wrong_types() -> None:
         "gold": None,
         "kills": None,
         "score": None,
+        "scoreDelta": None,
         "baseHP": None,
         "rolesAlive": 0,
         "errors": 0,
@@ -145,8 +150,35 @@ def test_metric_line_is_parseable_kv() -> None:
             )
             assert pairs["gold"] == "20"
             assert pairs["score"] == "280"
+            assert pairs["scoreDelta"] == "-"  # 首回合没有环比基线
             assert pairs["baseHP"] == "1500"
             assert pairs["kills"] == "-"
+        finally:
+            observer.close()
+
+
+def test_metric_score_delta_tracks_total_score_across_rounds() -> None:
+    """Given 连续两个回合的 totalScore 变化，When 写指标行，Then scoreDelta 是环比差值。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        observer = _observer(tmp)
+        try:
+            observer.observe(85, SAMPLE_REQUEST, {})  # totalScore=280
+            raised = {
+                **SAMPLE_REQUEST,
+                "teamOur": {**SAMPLE_REQUEST["teamOur"], "totalScore": 340},
+            }
+            observer.observe(86, raised, {})
+            observer.flush()
+            metric_path = observer.structured.log_path
+            assert metric_path is not None
+            lines = [
+                line
+                for line in metric_path.read_text(encoding="utf-8").splitlines()
+                if "[METRIC] M-01" in line
+            ]
+            assert len(lines) == 2
+            assert "scoreDelta=-" in lines[0]
+            assert "scoreDelta=60" in lines[1]
         finally:
             observer.close()
 

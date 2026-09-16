@@ -39,8 +39,22 @@ def _flag(value: object, *, default: bool) -> bool:
     return str(value).lower() in _TRUTHY
 
 
-def metric_fields(request: Mapping[str, Any]) -> dict[str, object]:
-    """从判题请求推导指标字段；不可推导的字段用 None（渲染为 ``-``）。"""
+def metric_fields(
+    request: Mapping[str, Any], *, previous_score: int | None = None
+) -> dict[str, object]:
+    """从判题请求推导指标字段；不可推导的字段用 None（渲染为 ``-``）。
+
+    ``kills`` 恒为 None（渲染 ``-``）是**如实说明不可得**，不是待补的 stub，也
+    绝不用别的数字糊弄排查：判题请求里没有任何逐单位击杀字段 —— 己方击杀只回
+    一个布尔动作结果（``lastRoundRoleActionResults``），敌方 ``roles`` 列表只给
+    「当前还站着几个」，既分不清「本轮被打死」与「一直没出现」，也分不清是谁的
+    战果。想要真实击杀数，只能等接口补字段，或从 ``teamEnemy.roles`` 的环比
+    差值间接估（噪声大，故不写进指标行）。
+
+    可得的替代信息是 ``scoreDelta`` = ``totalScore`` 相对**上一回合**的差值（由
+    调用方跨回合持有并传入 ``previous_score``；没有上一回合时为 None）。它至少
+    能让内部 LLM 看出「本轮有没有拿到分」，而不是盯着一个恒为 ``-`` 的 kills。
+    """
     team = request.get("teamOur")
     team = team if isinstance(team, Mapping) else {}
     roles = team.get("roles")
@@ -54,10 +68,14 @@ def metric_fields(request: Mapping[str, Any]) -> dict[str, object]:
         None,
     )
     errors = request.get("errors")
+    score = _as_int(team.get("totalScore"))
     return {
         "gold": _as_int(team.get("goldNum")),
         "kills": None,
-        "score": _as_int(team.get("totalScore")),
+        "score": score,
+        "scoreDelta": (
+            None if score is None or previous_score is None else score - previous_score
+        ),
         "baseHP": base_hp,
         "rolesAlive": len(roles),
         "errors": len(errors) if isinstance(errors, list) else 0,
@@ -77,6 +95,9 @@ class RoundObserver:
         self._round_logger = round_logger
         self._structured = structured
         self._metric_enabled = metric_enabled
+        # 上一回合的 totalScore：用于 scoreDelta（环比差值）。观察器与比赛同生命周期，
+        # 只有真的读到过分数才更新 —— 请求缺字段的回合不能把基线抹成 None。
+        self._last_score: int | None = None
 
     @classmethod
     def from_config(
@@ -131,13 +152,17 @@ class RoundObserver:
                 )
             )
         if self._metric_enabled:
+            fields = metric_fields(request, previous_score=self._last_score)
             self._structured.emit(
                 EventCode.M_01,
                 "metric",
                 round_no=round_no,
                 phase=phase_of(round_no),
-                **metric_fields(request),
+                **fields,
             )
+            score = fields["score"]
+            if isinstance(score, int):
+                self._last_score = score
 
     def emit(
         self,

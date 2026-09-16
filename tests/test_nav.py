@@ -15,7 +15,7 @@ SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from future_war.models import Pos, parse_request  # noqa: E402
+from future_war.models import Pos, enum_to_str, parse_request  # noqa: E402
 from future_war.core import (  # noqa: E402
     WorldModel,
     chebyshev,
@@ -24,6 +24,12 @@ from future_war.core import (  # noqa: E402
     plan_move,
     resolve_moves,
 )
+from future_war.strategy import (  # noqa: E402
+    TaskState,
+    TreasureState,
+    plan_turn,
+)
+from future_war.strategy.economy import EconomyState  # noqa: E402
 
 
 def _pos(x: int, y: int) -> dict[str, int]:
@@ -42,10 +48,14 @@ def _role(
     }
 
 
-def _request(round_no: int, roles: list[dict[str, Any]]) -> dict[str, Any]:
+def _request(
+    round_no: int,
+    roles: list[dict[str, Any]],
+    zones: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     return {
         "roundNo": round_no,
-        "mapInfo": {"width": 41, "height": 32, "zones": []},
+        "mapInfo": {"width": 41, "height": 32, "zones": zones or []},
         "teamOur": {
             "type": "challenger",
             "teamId": "t",
@@ -68,8 +78,8 @@ def _request(round_no: int, roles: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _view(roles: list[dict[str, Any]]):
-    return WorldModel().apply_round(parse_request(_request(1, roles)))
+def _view(roles: list[dict[str, Any]], zones: list[dict[str, Any]] | None = None):
+    return WorldModel().apply_round(parse_request(_request(1, roles, zones)))
 
 
 def _assert_legal_step(step: Pos, start: Pos, blocked: set[Pos] | frozenset[Pos]) -> None:
@@ -202,6 +212,62 @@ def test_resolve_moves_ignores_buildings_and_unknown_ids() -> None:
     view = _view(roles)
     resolved = resolve_moves(view, {10013: Pos(6, 5), 10010: Pos(6, 5), 99999: Pos(1, 1)})
     assert set(resolved) == {10010}
+
+
+# ------------------------------------------------- 跨模块全局解析（plan_turn）
+
+
+def _move_targets(plan) -> dict[int, Pos]:
+    """从 TurnPlan 里取 {角色 id: move 目标格}（其他动作忽略）。"""
+    return {
+        uid: command.targetPos[0]
+        for uid, command in plan.commands.items()
+        if enum_to_str(command.action) == "move" and command.targetPos
+    }
+
+
+def test_plan_turn_resolves_cross_module_move_conflict() -> None:
+    """Given 任务模块的开拓者与经济模块的工人本轮被指派到同一空格，
+    When plan_turn 汇总全部指令，Then 无重复目标格、无位置互换，每条 move 都合法。
+
+    这是线上 issue #1 的根因回归：``task_agent`` 用单单位 ``plan_move``，
+    不知道 ``economy`` 的工人本轮要去哪 —— 两个模块各自都「合法」的步，
+    合并后却是同一条争抢指令，判题器统一结算时全部非法（开拓者到不了任务点、
+    工人到不了矿点），于是长时间 ``ok:0,fail:N``。
+
+    修复后：争抢格只归一个角色，另一个宁可不发 move（原地待命），
+    也绝不发一条注定非法的 move。
+    """
+    zones = [
+        {"pos": _pos(17, 11), "neutralType": "challengerTaskPoint1"},
+        {"pos": _pos(6, 5), "neutralType": "stone"},
+    ]
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(10011, "pioneer", 17, 23, 200, backPackCapability=40, backpack=[]),
+        _role(10010, "worker", 15, 23, 220, backPackCapability=40, backpack=[]),
+    ]
+    view = _view(roles, zones)
+    plan = plan_turn(view, None, EconomyState(), TreasureState(), TaskState())
+    moves = _move_targets(plan)
+    starts = {role.id: role.pos for role in view.own_roles()}
+
+    # 修复前：两个模块各自算出的步都是 (16, 22)（同一空格）→ 判题器判非法
+    assert moves, f"两个角色都在赶路，不该一条 move 都没有: {plan.commands}"
+    assert set(moves) <= {10010, 10011}, f"只应涉及这两条移动指令: {moves}"
+    targets = list(moves.values())
+    assert len(targets) == len(set(targets)), f"不同角色被指派到同一格: {moves}"
+    # 争抢输家：整条 move 被移除（或换成别的合法指令），不留非法 move
+    for uid in (10010, 10011):
+        command = plan.commands.get(uid)
+        if command is not None and uid not in moves:
+            assert enum_to_str(command.action) != "move", f"{uid} 留下了非法 move"
+    for uid, step in moves.items():
+        _assert_legal_step(step, starts[uid], view.obstacles() - {starts[uid]})
+    for a, step_a in moves.items():
+        for b, step_b in moves.items():
+            swapped = step_a == starts[b] and step_b == starts[a]
+            assert not swapped, f"{a} 与 {b} 互换位置: {moves}"
 
 
 def main() -> int:

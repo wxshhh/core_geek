@@ -123,6 +123,78 @@ def test_bot_call_never_raises_on_broken_request() -> None:
         assert response.roleCommandMap is not None
 
 
+def _role_request(round_no: int, roles: list[dict[str, object]]) -> dict[str, object]:
+    """构造判题请求（zones 里放一个矿，保证活着时工人有活可干）。"""
+    return {
+        "roundNo": round_no,
+        "mapInfo": {
+            "width": 41,
+            "height": 32,
+            "zones": [{"pos": {"x": 5, "y": 12}, "neutralType": "stone"}],
+        },
+        "teamOur": {
+            "type": "challenger",
+            "teamId": "t",
+            "teamName": "t",
+            "goldNum": 0,
+            "totalScore": 0,
+            "roles": roles,
+        },
+        "teamEnemy": {"roles": []},
+        "robot": {"roles": []},
+        "phaseTask": "",
+        "lastRoundRoleActionResults": {},
+        "lastSummonTreasureResult": 0,
+        "llmResp": "",
+        "worldNews": {"officialNews": "", "folkLegends": ""},
+        "lastCmdResult": "",
+        "vendorShopList": [],
+        "weaponShopList": [],
+        "errors": [],
+    }
+
+
+def _station() -> dict[str, object]:
+    return {
+        "id": 10013,
+        "pos": {"x": 20, "y": 20},
+        "roleType": "station",
+        "health": 1500,
+        "level": 1,
+    }
+
+
+def _worker() -> dict[str, object]:
+    return {
+        "id": 10010,
+        "pos": {"x": 5, "y": 5},
+        "roleType": "worker",
+        "health": 220,
+        "backPackCapability": 40,
+        "backpack": [],
+    }
+
+
+def test_bot_returns_empty_response_when_wiped() -> None:
+    """Given 己方基地已毁且无存活角色，When Bot 处理请求，Then 返回空 Response 且不抛异常。
+
+    线上现象：基地被毁后仍每帧走完整规划，日志里刷出 250+ 帧 ``cmds=none``。
+    """
+    bot = StrategyBot()
+    # 活着时正常出指令（确认短路没有误伤正常回合）
+    alive = bot(parse_request(_role_request(1, [_station(), _worker()])))
+    assert alive.roleCommandMap, "存活回合应当有指令"
+    # 基地与角色全部消失 → 直接返回空 Response，并留下「已出局」决策摘要
+    dead = bot(parse_request(_role_request(2, [])))
+    assert dead.roleCommandMap == {}
+    assert dead.prompt == ""
+    assert dead.executeCmd == ""
+    assert bot.last_notes == ("wiped=1",), "应当短路，而不是照常跑 plan_turn"
+    # 请求恢复（角色重新出现）后规划必须自动恢复，不能是粘性禁用
+    again = bot(parse_request(_role_request(3, [_station(), _worker()])))
+    assert again.roleCommandMap, "角色重新出现后应当恢复规划"
+
+
 def main() -> int:
     """零依赖测试运行器：执行全部 test_* 函数并报告。"""
     test_funcs = [
