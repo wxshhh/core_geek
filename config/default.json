@@ -31,7 +31,8 @@
     "wall_max": 12,
     "wall_enabled": true,
     "wall_probe_budget": 12,
-    "wall_probe_from": 0
+    "wall_probe_from": 0,
+    "wall_stone_batch": 3
   },
   "combat": {
     "target_priority": [

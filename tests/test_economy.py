@@ -322,29 +322,6 @@ def test_builder_switches_to_walls_once_weapons_are_maxed() -> None:
         enum_to_str(c.action) == "move" for c in commands.values()
     )
 
-def main() -> int:
-    """零依赖测试运行器：执行全部 test_* 函数并报告。"""
-    test_funcs = [
-        obj
-        for name, obj in sorted(globals().items())
-        if name.startswith("test_") and callable(obj)
-    ]
-    failed = 0
-    for test in test_funcs:
-        try:
-            test()
-        except Exception as exc:  # noqa: BROAD_EXCEPT_OK — 运行器顶层边界：收集失败并继续
-            failed += 1
-            print(f"FAIL {test.__name__}: {exc!r}", file=sys.stderr)
-        else:
-            print(f"PASS {test.__name__}")
-    print(f"{len(test_funcs) - failed}/{len(test_funcs)} passed")
-    return 1 if failed else 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-
 
 def test_stone_is_reserved_for_walls_before_selling() -> None:
     """Given 有墙要修且背包石头刚够储备，When 贩卖，Then 留石头、改卖铜。
@@ -419,3 +396,45 @@ def test_buys_weapon_voucher_once_gold_allows() -> None:
     buys = [c for c in commands.values() if enum_to_str(c.action) == "buy"]
     assert buys, "应采购武器升级券"
     assert buys[0].name == "WeaponUpgradeVoucher1", buys[0].name
+
+
+def test_wall_trip_waits_for_a_stone_batch() -> None:
+    """Given 背包只有 1 块石头，When 规划，Then 不跑墙线、继续采矿攒料。
+
+    回归线上观察：工人「采一次石头就建一次墙」，来回跑把一整天耗光。原因是只要
+    有 1 块石头、且没有待卖货，就被判定可以去墙线 —— 于是永远在挖→跑→砌→挖
+    的循环里。改成攒够 ``build.wall_stone_batch``（默认 3）块才动身，一次到位连砌。
+    """
+    one = _role(10010, "worker", 5, 5, 220, backpack=["stone"])
+    view1 = _view([STATION, one], zones=[_mine(6, 5)])
+    cmd1 = plan_economy(view1)[10010]
+    assert enum_to_str(cmd1.action) == "collect", f"只背 1 块不该跑墙线，实际 {cmd1.action}"
+
+    three = _role(10010, "worker", 5, 5, 220, backpack=["stone"] * 3)
+    view3 = _view([STATION, three], zones=[_mine(6, 5)])
+    cmd3 = plan_economy(view3)[10010]
+    assert enum_to_str(cmd3.action) == "move", f"攒够 3 块应动身去墙线，实际 {cmd3.action}"
+
+
+def main() -> int:
+    """零依赖测试运行器：执行全部 test_* 函数并报告。"""
+    test_funcs = [
+        obj
+        for name, obj in sorted(globals().items())
+        if name.startswith("test_") and callable(obj)
+    ]
+    failed = 0
+    for test in test_funcs:
+        try:
+            test()
+        except Exception as exc:  # noqa: BROAD_EXCEPT_OK — 运行器顶层边界：收集失败并继续
+            failed += 1
+            print(f"FAIL {test.__name__}: {exc!r}", file=sys.stderr)
+        else:
+            print(f"PASS {test.__name__}")
+    print(f"{len(test_funcs) - failed}/{len(test_funcs)} passed")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

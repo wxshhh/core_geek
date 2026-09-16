@@ -27,6 +27,7 @@ DEFAULT_CONFIG: Final[dict[str, JsonValue]] = {
         "wall_enabled": True,
         "wall_probe_budget": 12,
         "wall_probe_from": 0,
+        "wall_stone_batch": 3,
     },
     "combat": {
         "target_priority": ["boss", "large", "medium", "small"],

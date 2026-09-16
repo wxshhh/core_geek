@@ -49,7 +49,8 @@ DAY_LENGTH: Final = 130
 WALL_MAX: Final = 12
 # 与 config 默认值保持一致：config=None 时（测试/模拟器直连）也走同一套参数
 WALL_PROBE_BUDGET: Final = 12
-WALL_PROBE_FROM: Final = 45  # 白天第几回合起专门铺墙（之前留给经济）
+WALL_STONE_BATCH: Final = 3  # 背包攒够这么多石头才值得跑一趟墙线（一次到位连砌）
+WALL_PROBE_FROM: Final = 0  # 0 = 全天可铺墙（黄区已按配图确定，无需攒额度探路）
 MAX_WEAPONS: Final = 3
 _WEAPON_ORDER: Final = ("rocket", "railgun", "gatling")
 _DEFAULT_PLAN: Final = ("rocket", "railgun", "railgun")
@@ -487,8 +488,12 @@ def _plan_worker(
     # 买券，下午石头也攒下了，再专心试推断出来的黄区。
     # 只在「手上没有铜铁（正在攒的那批货已脱手）」时才专程跑墙位：否则挖一格就
     # 被墙位拉走，永远攒不满一趟的货量，金币也就永远上不去（真机实测金币卡死在 45）。
-    if wall_ok and _cargo(worker) == 0 and (
-        state.wall_confirmed or _wall_window(view, config)
+    batch = _int_config(config, "build.wall_stone_batch", WALL_STONE_BATCH)
+    if (
+        wall_ok
+        and _cargo(worker) == 0
+        and worker.backpack.count("stone") >= batch  # 攒够一批再去，别采一块跑一趟
+        and (state.wall_confirmed or _wall_window(view, config))
     ):
         plan = _plan_build_wall(view, config, worker, state, adjacent_only=False)
         if plan is not None:
