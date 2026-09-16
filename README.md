@@ -51,7 +51,14 @@ curl -s -X POST localhost:18080 -d 'not json'
 ```bash
 python3 -m pytest tests/ -q        # 需 pytest（dev 依赖）
 python3 tests/test_nav.py          # 零依赖备用运行器（任选一个测试文件）
+python3 tests/test_self_play.py    # 本地模拟器回归：整局对弈，抓「角色零指令/防线被打穿」
 ```
+
+`sim/` 里的本地模拟器**只作回归测试台**：改完 planner/经济/建造后跑一条上面的
+自对弈回归，能在本地暴露「指令整条丢失、角色站着不动」这类结构性回归。它的地图
+几何已按任务书配图修正（基地 2×2，紧贴一圈蓝=武器、再外一圈黄=围墙）。
+**参数调优一律以线上平台 `[DIGEST] D-02` 为准，不以模拟器数据为准**——模拟器与官方
+判题器并不逐条一致（见 `src/future_war/sim/README.md` 的简化清单）。
 
 ## 架构
 
@@ -61,6 +68,7 @@ server.py ── StrategyBot ── planner.plan_turn（昼夜编排）
                                └─ 夜晚: combat(武器操控/优先级/防溢出) + offense(狙击/骚扰)
    core/     WorldModel(跨回合状态) + world_map + nav(寻路/碰撞)
    observability/  RoundLogger(JSONL) + StructuredLogger(事件码) + RoundObserver([METRIC])
+   sim/      本地模拟器 + mock 判题器（仅供回归测试，非调参依据）
 ```
 
 | 模块 | 职责 |
@@ -70,6 +78,7 @@ server.py ── StrategyBot ── planner.plan_turn（昼夜编排）
 | `core/` | 世界模型、可建造区推断、寻路与碰撞规避 |
 | `strategy/` | 经济/战斗/建造/任务/寻宝/推理/对手/进攻/LLM/沙盒/规划（含黄昏就位、围墙防线、建造反馈修正） |
 | `observability/` | 结构化日志、稳定事件码、每回合 `[METRIC]`/`[DIGEST]` 行 |
+| `sim/` | **本地回归测试台**：合成地图（几何按任务书配图修正）+ mock 判题器 + 驱动真实 `StrategyBot` 整局对弈 |
 | `config/` | 集中配置与版本戳 |
 
 ## 工作流（内网 → 一句话反馈）
@@ -113,9 +122,10 @@ CoreGeek/
 
 ## 目录
 
-- `src/future_war/` — Bot 源码（`server` / `models` / `core` / `strategy` / `observability`）
-- `tests/` — 17 套件（零依赖运行器 + pytest 双兼容）
-- `scripts/` — `selfcheck.py`（启动自检）、`package.py`（打包）
+- `src/future_war/` — Bot 源码（`server` / `models` / `core` / `strategy` / `observability` / `sim`）
+- `tests/` — 25 套件（零依赖运行器 + pytest 双兼容；含模拟器回归 `test_self_play.py`）
+- `scripts/` — `selfcheck.py`（启动自检）、`package.py`（打包）、`run_sim.py`（本地跑一局）、
+  `self_play.py`（批量自对弈回归）、`replay.py`（读回放 JSONL）
 - `config/` — `default.json` + profile + README
 - `docs/` — 比赛规范（只读）+ 策略设计 + 诊断字典 + 接口文档
 - `run.sh` — 启动脚本
