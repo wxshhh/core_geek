@@ -11,6 +11,14 @@ rem   package.bat 0.2.0                override the version
 rem   package.bat --flat               no top-level dir (main3.py at archive root)
 rem   package.bat --prefix MyDir       rename the top-level dir
 rem
+rem Interpreter lookup order (and why):
+rem   1. python        -- the usual command; must be Python 3.10+
+rem   2. .venv\Scripts\python.exe -- the interpreter vendored in this project
+rem   3. py -3         -- "Python Launcher for Windows": a separate py.exe that picks
+rem                       the newest installed Python 3. It ships with the official
+rem                       installer and is on PATH by default, so it is the safety net
+rem                       for machines where "python" is not on PATH.
+rem
 rem NOTE: this file is intentionally ASCII-only. cmd.exe reads .bat files using the
 rem console/OEM code page, so non-ASCII text here can be garbled or break parsing.
 rem Chinese docs: README.md, config\README.md.
@@ -25,25 +33,31 @@ rem the console window does not vanish before the result can be read.
 set "PAUSE_AT_END="
 echo "%cmdcmdline%" | find /i "%~nx0" >nul 2>nul && set "PAUSE_AT_END=1"
 
-if exist "%ROOT%.venv\Scripts\python.exe" (
-  set "PY=%ROOT%.venv\Scripts\python.exe"
-  goto :run
-)
+set "PY="
 
-where py >nul 2>nul
-if %errorlevel%==0 (
-  set "PY=py -3"
-  goto :run
-)
-
+rem 1) python -- the usual command, but it has to be 3.10+
 where python >nul 2>nul
-if %errorlevel%==0 (
-  set "PY=python"
-  goto :run
-)
+if errorlevel 1 goto :try_venv
+python -c "import sys;sys.exit(0 if sys.version_info[:2]>=(3,10) else 1)" >nul 2>nul
+if errorlevel 1 goto :try_venv
+set "PY=python"
+goto :run
 
-echo [ERROR] Python not found. Install Python 3.10+ and tick "Add python.exe to PATH":
-echo         https://www.python.org/downloads/windows/
+:try_venv
+rem 2) project-local virtualenv
+if exist "%ROOT%.venv\Scripts\python.exe" set "PY=%ROOT%.venv\Scripts\python.exe"
+if defined PY goto :run
+
+:try_py
+rem 3) Python Launcher fallback (py.exe, ships with the official installer)
+where py >nul 2>nul
+if errorlevel 1 goto :nopython
+set "PY=py -3"
+goto :run
+
+:nopython
+echo [ERROR] no usable Python found. Install Python 3.10+ (from python.org) and tick
+echo         "Add python.exe to PATH", or run this inside a project virtualenv.
 if defined PAUSE_AT_END pause
 exit /b 1
 
