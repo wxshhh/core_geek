@@ -104,7 +104,7 @@ CoreGeek/
   src/  config/  docs/  scripts/  tests/
 ```
 
-- **Windows**：`python scripts\package.py`
+- **Windows**：双击根目录的 **`package.bat`**（自动找 Python、结束后暂停显示结果）；也可在 cmd 里 `package.bat 0.2.0`
 - **macOS / Linux**：`python scripts/package.py`（或便捷入口 `bash scripts/package.sh`）
 
 产物：`dist/future-war-bot-<version>.tar.gz` + `.sha256` 校验文件；包内含

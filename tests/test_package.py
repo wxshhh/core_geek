@@ -114,6 +114,23 @@ def test_package_prefix_override_names_the_top_directory() -> None:
         archive.unlink(missing_ok=True)
         checksum.unlink(missing_ok=True)
 
+
+def test_windows_double_click_entry_exists_and_is_ascii() -> None:
+    """Given Windows 用户要「双击即可打包」，When 检查入口，Then 存在且为纯 ASCII。
+
+    为什么必须纯 ASCII：cmd.exe 按控制台/OEM 代码页读取 .bat，非 ASCII 文本会乱码
+    甚至破坏解析。仓库既有 run.bat 的规矩也是「中文只在文档里」。
+    """
+    entry = ROOT / "package.bat"
+    assert entry.is_file(), "缺少 Windows 双击打包入口 package.bat"
+    raw = entry.read_bytes()
+    assert all(b < 128 for b in raw), "package.bat 含非 ASCII 字节，在非中文代码页会乱码"
+    text = raw.decode("ascii")
+    assert r"scripts\package.py" in text, "package.bat 没有调用打包脚本"
+    assert "CoreGeek" in text, "package.bat 未说明归档顶层目录为 CoreGeek"
+    assert "pause" in text.lower(), "双击运行结束需要暂停，否则窗口一闪而过"
+
+
 def main() -> int:
     """零依赖测试运行器：执行全部 test_* 函数并报告。"""
     test_funcs = [
