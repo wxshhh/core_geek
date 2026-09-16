@@ -8,10 +8,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from typing import Final
 
 from future_war.config import Config
 from future_war.models import Pos, RoleCommand, enum_to_str
 from future_war.core.nav import resolve_moves
+from future_war.core.world_map import chebyshev, in_bounds
 from future_war.core.world_view import WorldView
 from future_war.strategy.builder import plan_upgrades
 from future_war.strategy.combat import plan_defense
@@ -20,6 +22,9 @@ from future_war.strategy.economy import EconomyState, plan_economy
 from future_war.strategy.offense import OffenseState, plan_offense
 from future_war.strategy.task_agent import TaskState, plan_task
 from future_war.strategy.treasure import TreasureState, plan_treasure
+
+_DIRS: Final = ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1))
+_MOBILE_KINDS: Final = frozenset({"pioneer", "worker"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +39,7 @@ class TurnPlan:
 
 def _resolve_global_moves(
     view: WorldView, commands: dict[int, RoleCommand]
-) -> None:
+) -> tuple[str, ...]:
     """回合末对**全部模块**产出的 move 做一次全局同步解析（就地改写 commands）。
 
     为什么必须放在这里：``economy`` / ``combat`` 只在各自模块内部用
@@ -45,8 +50,13 @@ def _resolve_global_moves(
     任务点、采矿工人到不了矿点，0 堵墙）。这里用一次全局解析把最后一道关补上：
     后解析者避开先解析者的目标格，跨模块的争抢/互换在**发出前**就被消掉。
 
-    只动 move：其余动作（build/collect/sell/attack/acceptTask…）原样保留，
-    优先级与合并顺序都不受影响（原地待命永远优于发一条注定非法的 move）。
+    解析不出步（``step is None``）时**不再整条删除 move**：删掉 = 该单位整回合零
+    指令，判题器只能让它原地不动，真机表现就是「工人/开拓者站着不动」。这里改用
+    :func:`_fallback_step` 保底 —— 朝目标横移一格（不抢格、不互换）也比什么都不发
+    强；只有四周被彻底堵死才删（并记 ``idle=<id>:move-resolve-failed``）。
+
+    返回本回合的移动解析诊断（进 D-02 行）：``move_fallback=<ids>``=触发保底、
+    ``idle=<id>:move-resolve-failed``=连保底步都没有。
     """
     goals: dict[int, Pos] = {}
     for uid, command in commands.items():
@@ -57,15 +67,71 @@ def _resolve_global_moves(
     # 只有一条 move 时不可能跨模块争抢：单条指令本就被 plan_move / resolve_moves
     # 校验过是合法步，这里省下一次 BFS（每帧 ~3ms）。
     if len(goals) < 2:
-        return
-    for uid, step in resolve_moves(view, goals).items():
+        return ()
+    resolved = resolve_moves(view, goals)
+    taken: set[Pos] = set()
+    fallback: list[int] = []
+    dropped: list[int] = []
+    for uid in sorted(goals):  # 与 resolve_moves 默认优先级（id 升序）一致
         command = commands.get(uid)
         if command is None:  # 非移动单位：resolve_moves 不认，保持原指令
             continue
-        if step is None:
-            del commands[uid]  # 无合法步 → 移除 move，原地待命
-        else:
+        step = resolved.get(uid)
+        if step is not None:
             commands[uid] = replace(command, targetPos=(step,))
+            taken.add(step)
+            continue
+        alt = _fallback_step(view, uid, goals[uid], taken)
+        if alt is None:
+            del commands[uid]  # 确实无路可走（被围死）→ 原地待命
+            dropped.append(uid)
+        else:
+            commands[uid] = replace(command, targetPos=(alt,))
+            taken.add(alt)
+            fallback.append(uid)
+    notes: list[str] = []
+    if fallback:
+        notes.append("move_fallback=" + ",".join(str(uid) for uid in fallback))
+    if dropped:
+        notes.append(
+            "idle=" + ",".join(f"{uid}:move-resolve-failed" for uid in dropped)
+        )
+    return tuple(notes)
+
+
+def _fallback_step(
+    view: WorldView, uid: int, goal: Pos, taken: set[Pos]
+) -> Pos | None:
+    """解析失败的 move 的保底步：朝目标挪一格，且保证不抢格、不互换。
+
+    为什么不是直接 ``plan_move``：``plan_move`` 只看**当前**阻挡，不知道队友本回合
+    的意图，会把刚好被占的目标格再发一次（判题器判定双方 move 全非法，正是本函数
+    要修的那个坑）。这里把「全部己方角色当前格 + 已定案目标格」一起当作阻挡：
+    踩人不可能、互换也不可能（要互换就必须踏入别人的当前格）。
+    返回 ``None`` = 连相邻空格都没有（被彻底围死）。
+    """
+    role = next(
+        (
+            item
+            for item in view.dynamic.own_roles
+            if item.id == uid and enum_to_str(item.roleType) in _MOBILE_KINDS
+        ),
+        None,
+    )
+    if role is None:
+        return None
+    blocked = view.obstacles()  # 含己方全部角色当前格（也就含 role 自己）
+    width, height = view.static_map.width, view.static_map.height
+    free = [
+        cell
+        for cell in (
+            Pos(role.pos.x + dx, role.pos.y + dy) for dx, dy in _DIRS
+        )
+        if in_bounds(cell, width, height) and cell not in blocked and cell not in taken
+    ]
+    if not free:
+        return None
+    return min(free, key=lambda cell: (chebyshev(cell, goal), cell.x, cell.y))
 
 
 def plan_turn(
@@ -91,13 +157,16 @@ def plan_turn(
         commands.update(
             plan_offense(view, config, frozenset(commands), offense_state)
         )
-        _resolve_global_moves(view, commands)
+        move_notes = _resolve_global_moves(view, commands)
         attacks = sum(
             1 for c in commands.values() if enum_to_str(c.action) == "attack"
         )
         return TurnPlan(
             commands=commands,
-            notes=(f"night weapons={len(view.own_weapons())} attacks={attacks}",),
+            notes=(
+                f"night weapons={len(view.own_weapons())} attacks={attacks}",
+                *move_notes,
+            ),
         )
     commands = plan_economy(view, config, economy_state)
     notes: list[str] = list(economy_state.notes) if economy_state is not None else []
@@ -117,12 +186,15 @@ def plan_turn(
         f"phaseTask_len={len(phase_text)} task_cmd={task_actions or '-'}"
         f" prompt={int(bool(task.prompt))} cmd={int(bool(task.execute_cmd))}"
     )
+    # 任务侧为什么停着（不接受/不提交/原地等 phaseTask）：真机日志直接指认
+    if task.stall:
+        notes.append(f"task_stall={task.stall}")
     if not task.commands:
         treasure = plan_treasure(view, config, treasure_state)
         commands.update(treasure)
         if treasure:
             notes.append(f"treasure={len(treasure)}")
-    _resolve_global_moves(view, commands)
+    notes.extend(_resolve_global_moves(view, commands))
     return TurnPlan(
         commands=commands,
         prompt=task.prompt,

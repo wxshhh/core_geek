@@ -41,8 +41,8 @@ from typing import Final
 
 from future_war.config import Config
 from future_war.models import Action, Pos, Role, RoleCommand, enum_to_str
-from future_war.core.nav import resolve_moves
-from future_war.core.world_map import chebyshev
+from future_war.core.nav import plan_move, resolve_moves
+from future_war.core.world_map import chebyshev, in_bounds
 from future_war.core.world_view import WorldView
 from future_war.strategy.builder import (
     affordable_voucher,
@@ -132,6 +132,7 @@ def plan_economy(
     assignment = _assign_mines(view, workers)
     commands: dict[int, RoleCommand] = {}
     goals: dict[int, Pos] = {}
+    stalls: dict[int, str] = {}  # 工人 id → 本回合拿不到指令的原因（供 D-02 idle= 诊断）
     for worker in workers:
         cmd, goal = _plan_worker(
             view,
@@ -141,6 +142,7 @@ def plan_economy(
             max_weapons,
             state,
             assignment.get(worker.id),
+            stalls,
         )
         if cmd is not None:
             commands[worker.id] = cmd
@@ -149,11 +151,100 @@ def plan_economy(
     for uid, step in resolve_moves(view, goals).items():
         if step is not None:
             commands[uid] = RoleCommand(action=Action.MOVE, targetPos=(step,))
+    # 「有移动目标但解析不出合法步」= 本回合同样一条指令都发不出去（真机表现：
+    # 工人永远站着不动），必须记下原因并走保底，不能静默丢弃。
+    for uid in goals:
+        if uid not in commands:
+            stalls[uid] = "no-step"
+    _rescue_idle(view, workers, commands, stalls)
     _record_build_attempts(commands, state)
     state.notes.extend(
-        _diagnose(view, config, state, workers, orders, max_weapons, commands)
+        _diagnose(view, config, state, workers, orders, max_weapons, commands, stalls)
     )
     return commands
+
+
+def _rescue_idle(
+    view: WorldView,
+    workers: list[Role],
+    commands: dict[int, RoleCommand],
+    stalls: dict[int, str],
+) -> None:
+    """保底：本回合拿不到任何指令的工人，退化为「走向最近的可达矿 / 可达空地」。
+
+    为什么必须兜住（线上事故根因）：工人整回合零指令 = 判题器只能让它原地不动，
+    而没有任何模块会在下一回合修正它 —— 现场就是「两个工人完全不移动」。宁可走
+    一步看起来没用的路，也绝不允许静默什么都不做。
+
+    两个例外（``yield-*``）：修复包与升级券必须由 ``plan_consumables`` /
+    ``plan_upgrades`` 发出 ``use``，而 planner 是 ``setdefault`` 合并 —— 这里一旦
+    给同一角色补一条 move，就把 ``use`` 挤掉了，修复包与券将永远用不出去。
+    """
+    pending = {
+        worker.id: stalls.get(worker.id, "no-cmd")
+        for worker in workers
+        if worker.id not in commands and not stalls.get(worker.id, "").startswith("yield-")
+    }
+    for worker in workers:  # 已有指令的工人不是 idle，原因无需再上报
+        if worker.id in commands:
+            stalls.pop(worker.id, None)
+    if not pending:
+        return
+    fallback: dict[int, Pos] = {}
+    for worker in workers:
+        if worker.id not in pending:
+            continue
+        cmd, goal = _idle_fallback(view, worker)
+        if cmd is not None:
+            commands[worker.id] = cmd
+            stalls[worker.id] = "rescued"
+        elif goal is not None:
+            fallback[worker.id] = goal
+    for uid, step in resolve_moves(view, fallback).items():
+        if step is not None:
+            commands[uid] = RoleCommand(action=Action.MOVE, targetPos=(step,))
+            stalls[uid] = "rescued"
+    for uid in pending:  # 连一步都走不出去（被彻底围死）→ 如实上报 trapped
+        if stalls.get(uid) != "rescued":
+            stalls[uid] = "trapped"
+
+
+def _idle_fallback(
+    view: WorldView, worker: Role
+) -> tuple[RoleCommand | None, Pos | None]:
+    """保底动作：最近的**可达**矿（已在旁边就直接采），没有矿则走向可达空地。
+
+    顺序刻意如此：矿是工人唯一的生产手段，能靠近矿就靠近；实在没有矿（或全图矿都
+    被堵死）时也要动起来 —— 走向可建造区里任意可达空地。都被围死才返回
+    ``(None, None)``，由 ``_diagnose`` 记成 ``idle=<id>:trapped``。
+    """
+    mines = sorted(
+        (zone.pos for zone in view.mines()),
+        key=lambda m: (chebyshev(worker.pos, m), m.x, m.y),
+    )
+    for mine in mines:
+        if chebyshev(worker.pos, mine) <= 1:
+            return RoleCommand(action=Action.COLLECT, targetPos=(mine,)), None
+        if plan_move(view, worker.id, mine) is not None:
+            return None, mine
+    cells = standable_cells(view, view.yellow_build_cells() | view.blue_build_cells())
+    for cell in sorted(cells, key=lambda c: (chebyshev(worker.pos, c), c.x, c.y)):
+        if plan_move(view, worker.id, cell) is not None:
+            return None, cell
+    step = _free_neighbor(view, worker)
+    return (None, step) if step is not None else (None, None)
+
+
+def _free_neighbor(view: WorldView, worker: Role) -> Pos | None:
+    """任意一个可达的相邻空格（四周全被堵死 → ``None``）。"""
+    blocked = view.obstacles() - {worker.pos}
+    width, height = view.static_map.width, view.static_map.height
+    free: list[Pos] = []
+    for dx, dy in _NEIGHBORS:
+        cell = Pos(worker.pos.x + dx, worker.pos.y + dy)
+        if in_bounds(cell, width, height) and cell not in blocked:
+            free.append(cell)
+    return min(free, key=lambda c: (c.x, c.y)) if free else None
 
 
 def _diagnose(
@@ -164,11 +255,16 @@ def _diagnose(
     orders: dict[int, str],
     max_weapons: int,
     commands: dict[int, RoleCommand],
+    stalls: dict[int, str] | None = None,
 ) -> list[str]:
     """本回合「为什么建/没建」的一句话摘要（真机只能看控制台，必须自解释）。
 
     每回合最多几条短语，直接进 ``D-02`` 行；不含搜索，只读当前快照 + 状态，
     因此可以放心每回合调用。
+
+    ``idle=`` 是这次事故的直接答案：**谁本回合没有任何指令、为什么**。真机日志里
+    一眼就能指认，不必再靠猜（``no-mine`` = 全图没有可用矿、``no-step`` = 有目标但
+    解析不出合法步、``trapped`` = 四周被堵死、``yield-*`` = 刻意让路给消耗品/升级券）。
     """
     weapons = len(view.own_weapons())
     walls = len(view.own_walls())
@@ -225,7 +321,31 @@ def _diagnose(
         if cmd.name and cmd.targetPos
     ]
     notes.append("issued=" + ("+".join(builds) if builds else "none"))
+    stalled = _stall_note(stalls or {})
+    if stalled:
+        notes.append(stalled)
     return notes
+
+
+def _stall_note(stalls: dict[int, str]) -> str:
+    """把「谁没有指令、为什么」拼成 ``idle=<id>:<原因>``（无则空串）。
+
+    刻意让路（``yield-*``，等消耗品/升级券落地）与保底成功（``rescued``）分开列：
+    前者不是故障，后者是这次修复生效的证据，真机上一眼能区分。
+    """
+    idle = [f"{uid}:{why}" for uid, why in sorted(stalls.items())
+            if not why.startswith(("yield-", "rescued"))]
+    yields = [f"{uid}:{why[6:]}" for uid, why in sorted(stalls.items())
+              if why.startswith("yield-")]
+    rescued = [str(uid) for uid, why in sorted(stalls.items()) if why == "rescued"]
+    parts = []
+    if idle:
+        parts.append("idle=" + ",".join(idle))
+    if yields:
+        parts.append("yield=" + ",".join(yields))
+    if rescued:
+        parts.append("rescue=" + ",".join(rescued))
+    return " ".join(parts)
 
 
 def _weapon_cells_free(view: WorldView, state: EconomyState) -> bool:
@@ -735,6 +855,7 @@ def _plan_worker(
     max_weapons: int,
     state: EconomyState,
     mine: Pos | None,
+    stalls: dict[int, str] | None = None,
 ) -> tuple[RoleCommand | None, Pos | None]:
     """按职责产出（指令 | 移动目标）。
 
@@ -746,6 +867,20 @@ def _plan_worker(
     「采一块砌一块」的来回空转），但同一时刻最多放一个人离开矿区去墙线：
     谁先攒够一批谁去砌，另一个接着采石。线上实测的瓶颈是**砌墙速度**，不是金币，
     所以这一模式下石头永不「备够就变现」。
+
+    ``(None, None)`` = 本回合既没有指令也没有移动目标，**只可能**来自这几条分支
+    （``stalls`` 会被写成原因，plan_economy 据此做保底与 D-02 诊断）：
+
+    1. ``yield-fixer``：手上有修复包且身旁有残血墙 → 让路给 ``plan_consumables``
+       的 ``use WallFixer``（经济指令会盖掉它，必须主动让路）；
+    2. ``yield-voucher``：手上有券且目标建筑就在旁边 → 让路给 ``plan_upgrades``；
+    3. ``no-mine``：走到最后一步仍拿不到矿 —— ``_preferred_mine`` 返回 ``None``
+       （全图没有矿，或 ``_assign_mines`` 没给出兜底矿）；
+    4. （在 plan_economy 里补记）``no-step``：有移动目标但 ``resolve_moves``
+       解析不出合法步（目标不可达且已到最近点 / 被队友占了唯一落脚点）。
+
+    1、2 是**刻意**让路；3、4 是真正的死路，plan_economy 会用 ``_rescue_idle``
+    兜住 —— 真机上「两个工人完全不移动」就是 3/4 静默返回的结果。
     """
     if order == "build":
         plan = _plan_build_weapon(view, config, worker, max_weapons, state.failed_build_cells)
@@ -756,11 +891,11 @@ def _plan_worker(
         # 手里有修复包且身旁就是残血围墙：本回合什么都不发，让 plan_consumables 的
         # `use WallFixer` 落地。经济指令永远先占住角色（planner 用 setdefault 合并），
         # 不主动让路的话修复包会一直躺在背包里 —— 与升级券「use 被吞」是同一个坑。
-        return None, None
+        return _yield(stalls, worker, "yield-fixer")
     action, target = voucher_trip(view, worker, config)
     if action == "use":
         # 本回合什么都不发，让 plan_upgrades 的 use 指令落地（否则被经济指令盖掉）
-        return None, None
+        return _yield(stalls, worker, "yield-voucher")
     if action == "walk":
         return None, target  # 先把券送到目标建筑旁
     stone_keep = _stone_reserve(view, state, config)
@@ -785,8 +920,12 @@ def _plan_worker(
             plan = _plan_build_wall(view, config, worker, state, adjacent_only=False)
             if plan is not None:
                 return plan
-        return _plan_collect(
-            worker, _preferred_mine(view, worker, order, mine, need_stone=True)
+        return _collect_or_stall(
+            stalls,
+            worker,
+            _plan_collect(
+                worker, _preferred_mine(view, worker, order, mine, need_stone=True)
+            ),
         )
     # 专门跑墙位：已确认过合法墙位（值得专程铺线），或已进入「铺墙时段」
     # （``build.wall_probe_from``，默认白天第 45 回合起）。上午留给经济：挖矿→贩卖→
@@ -803,7 +942,31 @@ def _plan_worker(
         if plan is not None:
             return plan
     need_stone = _needs_stone(view, state, config, order, worker)
-    return _plan_collect(worker, _preferred_mine(view, worker, order, mine, need_stone))
+    return _collect_or_stall(
+        stalls,
+        worker,
+        _plan_collect(worker, _preferred_mine(view, worker, order, mine, need_stone)),
+    )
+
+
+def _yield(
+    stalls: dict[int, str] | None, worker: Role, reason: str
+) -> tuple[None, None]:
+    """记录「刻意让路」并返回 ``(None, None)``（另一模块会替这名工人发指令）。"""
+    if stalls is not None:
+        stalls[worker.id] = reason
+    return None, None
+
+
+def _collect_or_stall(
+    stalls: dict[int, str] | None,
+    worker: Role,
+    plan: tuple[RoleCommand | None, Pos | None],
+) -> tuple[RoleCommand | None, Pos | None]:
+    """采集结果为空（没有可用矿）时记下 ``no-mine``，交给保底分支处理。"""
+    if plan == (None, None) and stalls is not None:
+        stalls[worker.id] = "no-mine"
+    return plan
 
 
 def _fixer_repair_first(view: WorldView, config: Config | None, worker: Role) -> bool:

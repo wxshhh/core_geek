@@ -235,8 +235,8 @@ def test_plan_turn_resolves_cross_module_move_conflict() -> None:
     合并后却是同一条争抢指令，判题器统一结算时全部非法（开拓者到不了任务点、
     工人到不了矿点），于是长时间 ``ok:0,fail:N``。
 
-    修复后：争抢格只归一个角色，另一个宁可不发 move（原地待命），
-    也绝不发一条注定非法的 move。
+    修复后：争抢格只归一个角色；输家不再被整条删掉（删掉 = 整回合零指令 = 站着
+    不动），而是走保底步 —— 朝目标横移一格，同样不抢格、不互换。
     """
     zones = [
         {"pos": _pos(17, 11), "neutralType": "challengerTaskPoint1"},
@@ -257,17 +257,35 @@ def test_plan_turn_resolves_cross_module_move_conflict() -> None:
     assert set(moves) <= {10010, 10011}, f"只应涉及这两条移动指令: {moves}"
     targets = list(moves.values())
     assert len(targets) == len(set(targets)), f"不同角色被指派到同一格: {moves}"
-    # 争抢输家：整条 move 被移除（或换成别的合法指令），不留非法 move
-    for uid in (10010, 10011):
-        command = plan.commands.get(uid)
-        if command is not None and uid not in moves:
-            assert enum_to_str(command.action) != "move", f"{uid} 留下了非法 move"
     for uid, step in moves.items():
         _assert_legal_step(step, starts[uid], view.obstacles() - {starts[uid]})
     for a, step_a in moves.items():
         for b, step_b in moves.items():
             swapped = step_a == starts[b] and step_b == starts[a]
             assert not swapped, f"{a} 与 {b} 互换位置: {moves}"
+
+
+def test_plan_turn_conflict_loser_keeps_a_legal_step() -> None:
+    """Given 两个模块的 move 争抢同一空格，When 全局解析，Then 输家仍有合法一步。
+
+    回归线上事故「两个工人完全不移动」：旧实现在 ``resolve_moves`` 返回 ``None`` 时
+    直接 ``del commands[uid]``，判题器就把这个单位当成本回合没有任何指令 → 原地不动；
+    下一回合同样的争抢再删一次，于是整局不动。现在改为保底横移一格（``move_fallback=``）。
+    """
+    zones = [
+        {"pos": _pos(17, 11), "neutralType": "challengerTaskPoint1"},
+        {"pos": _pos(6, 5), "neutralType": "stone"},
+    ]
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(10011, "pioneer", 17, 23, 200, backPackCapability=40, backpack=[]),
+        _role(10010, "worker", 15, 23, 220, backPackCapability=40, backpack=[]),
+    ]
+    view = _view(roles, zones)
+    plan = plan_turn(view, None, EconomyState(), TreasureState(), TaskState())
+    moves = _move_targets(plan)
+    assert 10011 in moves, f"争抢输家也必须拿到合法步，而不是零指令: {plan.commands}"
+    assert any(note.startswith("move_fallback=") for note in plan.notes), plan.notes
 
 
 def main() -> int:

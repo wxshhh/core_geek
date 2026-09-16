@@ -174,15 +174,30 @@ def test_worker_builds_weapon_when_gold_and_blue_cell_adjacent() -> None:
 
 
 def test_no_build_when_gold_below_cost() -> None:
-    """Given 金币不足 25，When 规划经济，Then 不建造（无其他目标则无指令）。"""
+    """Given 金币不足 25，When 规划经济，Then 不建造（退化为保底移动，绝不静默发呆）。
+
+    为什么不再断言「空指令集」：线上事故里「两个工人完全不移动」就是空指令集造成的
+    —— 判题器只让没指令的单位原地不动，下一回合也没人会来修正。现在保底分支保证
+    任何工人至少有一条指令。
+    """
     view = _view([STATION, _role(10010, "worker", 23, 23, 220)], gold=10)
-    assert plan_economy(view) == {}
+    commands = plan_economy(view)
+    assert not any(c.name for c in commands.values()), "金币不足不该发出建造"
+    assert 10010 in commands, "没有建造目标也必须退化出一条具体指令"
 
 
 def test_no_command_when_nothing_available() -> None:
-    """Given 无矿无小贩且金币不足，When 规划经济，Then 不产出任何指令。"""
+    """Given 无矿无小贩且金币不足，When 规划经济，Then 仍产出保底移动（不再零指令）。
+
+    回归线上事故：工人既不能建造也不能移动时静默返回 ``(None, None)``，真机表现就是
+    整局站着不动。保底口径 = 没有矿就走向任意可达空地。
+    """
     view = _view([STATION, _role(10010, "worker", 5, 5, 220)], gold=0)
-    assert plan_economy(view) == {}
+    commands = plan_economy(view)
+    assert 10010 in commands
+    cmd = commands[10010]
+    assert enum_to_str(cmd.action) == "move"
+    assert chebyshev(cmd.targetPos[0], Pos(5, 5)) == 1
 
 
 def test_weapon_plan_respects_config_mix() -> None:
@@ -630,6 +645,59 @@ def test_shopper_is_sent_to_buy_wall_fixer_when_wall_damaged() -> None:
     assert any(
         chebyshev(c.targetPos[0], Pos(32, 32)) == 1 for c in moves if c.targetPos
     ), f"该有人专程去商店买修复包，实际 {[enum_to_str(c.action) for c in commands.values()]}"
+
+
+def test_two_workers_always_get_a_command_without_any_mine() -> None:
+    """Given 地图上一个矿都没有、金币为 0，When 规划经济，Then 两个工人各有具体指令。
+
+    线上事故回归：工人整回合零指令 = 判题器让它原地不动，现场就是「两个工人完全
+    不移动」。修法不是继续加策略，而是把「静默什么都不做」变成保底动作。
+    """
+    roles = [_role(10013, "station", 20, 20, 1500, level=1),
+             _role(10010, "worker", 5, 5, 220),
+             _role(10012, "worker", 30, 30, 220)]
+    commands = plan_economy(_view(roles, gold=0))
+    assert 10010 in commands and 10012 in commands, commands
+
+
+def test_idle_worker_falls_back_to_a_free_step_without_station() -> None:
+    """Given 连基地都没有（可建造区为空）且没有矿，When 规划经济，
+    Then 工人仍退化为朝可达空地走一步（最后一档保底）。"""
+    view = _view([_role(10010, "worker", 5, 5, 220)], gold=0)
+    commands = plan_economy(view)
+    assert 10010 in commands, "连空地目标都没有时必须退化为相邻空格"
+    cmd = commands[10010]
+    assert enum_to_str(cmd.action) == "move"
+    assert chebyshev(cmd.targetPos[0], Pos(5, 5)) == 1
+
+
+def test_trapped_worker_is_reported_as_idle_in_notes() -> None:
+    """Given 工人四周被围墙堵死且无矿可采，When 规划经济，
+    Then D-02 notes 给出 ``idle=<id>:trapped``（谁没有指令、为什么）。
+
+    这是本次事故要求的诊断字段：真机日志一眼指认，不用再猜。
+    """
+    from future_war.strategy.economy import EconomyState
+
+    roles = [_role(10010, "worker", 5, 5, 220)]
+    for index, (dx, dy) in enumerate(
+        [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)]
+    ):
+        roles.append(_role(40000 + index, "wall", 5 + dx, 5 + dy, 1000, level=1))
+    state = EconomyState()
+    commands = plan_economy(_view(roles, gold=0), None, state)
+    assert 10010 not in commands, "被围死时确实无步可走"
+    assert any("idle=10010:trapped" in note for note in state.notes), state.notes
+
+
+def test_idle_worker_rescued_toward_reachable_mine_is_logged() -> None:
+    """Given 工人本回合既不能建造也没有可用步（无矿、无基地），
+    When 规划经济，Then notes 给出 ``rescue=<id>``（保底生效的证据）。"""
+    from future_war.strategy.economy import EconomyState
+
+    state = EconomyState()
+    plan_economy(_view([_role(10010, "worker", 5, 5, 220)], gold=0), None, state)
+    assert any("rescue=10010" in note for note in state.notes), state.notes
 
 
 def main() -> int:
