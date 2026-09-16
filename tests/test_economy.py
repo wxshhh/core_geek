@@ -339,11 +339,17 @@ def test_stone_is_reserved_for_walls_before_selling() -> None:
 
 
 def test_surplus_stone_beyond_reserve_is_sold() -> None:
-    """Given 石头超过储备量，When 贩卖，Then 只卖多出来的那部分（储备量按配置）。"""
+    """Given 石头超过储备量，When 贩卖，Then 只卖多出来的那部分（储备量按配置）。
+
+    这条钉的是**旧行为**（``build.wall_first=false``）：储备量由 ``economy.stone_reserve``
+    决定，超出部分换钱。墙优先模式改用按人头的囤石目标，见
+    ``test_wall_first_mode_keeps_mining_stone_for_the_whole_team``。
+    """
     worker = _role(10010, "worker", 5, 5, 220, backpack=["stone"] * 8)
     view = _view([STATION, worker], zones=[_vendor(6, 5)])
     for reserve, expected in ((2, 6), (4, 4), (6, 2)):
-        cmd = plan_economy(view, _config(economy={"stone_reserve": reserve}))[10010]
+        config = _config(economy={"stone_reserve": reserve}, build={"wall_first": False})
+        cmd = plan_economy(view, config)[10010]
         assert cmd.name == "stone"
         assert cmd.num == expected, f"储备 {reserve} 时应卖 {expected}，实际 {cmd.num}"
 
@@ -414,6 +420,89 @@ def test_wall_trip_waits_for_a_stone_batch() -> None:
     view3 = _view([STATION, three], zones=[_mine(6, 5)])
     cmd3 = plan_economy(view3)[10010]
     assert enum_to_str(cmd3.action) == "move", f"攒够 3 块应动身去墙线，实际 {cmd3.action}"
+
+
+def _wall_first_view(
+    *,
+    roles: list[dict[str, Any]],
+    zones: list[dict[str, Any]],
+    gold: int = 0,
+) -> Any:
+    """墙优先模式的公共视图构造：默认配置里 ``build.wall_first`` 已为 true。"""
+    return _view(roles, zones=zones, gold=gold)
+
+
+def test_wall_first_mode_keeps_mining_stone_for_the_whole_team() -> None:
+    """Given 墙优先模式、武器已插满且还有 12 堵墙没修，When 队里两名工人都有铜/铁矿
+    可采，Then 两人都继续采石（不因为「备够就变现」转去挖铜铁）。
+
+    回归线上实测：墙能建但**太慢**。旧逻辑备够 ``economy.stone_reserve``（4 块）
+    就转去挖铜/铁换钱，于是砌墙只剩一个人、还常常断料。墙优先模式把目标量提到
+    ``wall_stone_batch × 工人数``（3×2=6），全队持续采石直到囤够。
+    """
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(10040, "railgun", 22, 22, 1000, level=1, attackPower=10, attackRange=6),
+        _role(10041, "rocket", 24, 22, 1000, level=1, attackPower=20, attackRange=10),
+        _role(10042, "gatling", 26, 22, 1000, level=1, attackPower=10, attackRange=3),
+        _role(10010, "worker", 19, 21, 220),  # 贴着石矿、且不挨着黄区（不会顺路砌墙）
+        _role(10012, "worker", 21, 19, 220),
+    ]
+    # 矿区都贴着工人：按旧规则（need_stone=False）会挑产值更高的铜/铁，
+    # 墙优先模式必须改挑石矿 —— 这条测试即证伪「备够就变现」。
+    zones = [
+        _mine(18, 18, "copper"),
+        _mine(22, 18, "iron"),
+        _mine(20, 20, "stone"),
+    ]
+    view = _wall_first_view(roles=roles, zones=zones, gold=0)
+    commands = plan_economy(view)
+
+    collected = {
+        uid: view.mine_at(cmd.targetPos[0])
+        for uid, cmd in commands.items()
+        if enum_to_str(cmd.action) == "collect" and cmd.targetPos
+    }
+    assert len(collected) == 2, f"两名工人都该去采石，实际 {collected}"
+    assert set(collected.values()) == {"stone"}, f"墙优先模式不该转采铜铁：{collected}"
+
+
+def test_wall_first_mode_sends_a_worker_to_the_wall_line() -> None:
+    """Given 武器已插满且两名工人都攒够一批石头，When 规划经济，
+    Then 至少有一名工人动身去墙线（另一人留下继续采石，避免两人同时在路上）。"""
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(10040, "railgun", 22, 22, 1000, level=1, attackPower=10, attackRange=6),
+        _role(10041, "rocket", 24, 22, 1000, level=1, attackPower=20, attackRange=10),
+        _role(10042, "gatling", 26, 22, 1000, level=1, attackPower=10, attackRange=3),
+        _role(10010, "worker", 10, 10, 220, backpack=["stone"] * 3),
+        _role(10012, "worker", 30, 30, 220, backpack=["stone"] * 3),
+    ]
+    zones = [_mine(9, 9, "stone"), _mine(31, 31, "stone")]
+    view = _wall_first_view(roles=roles, zones=zones, gold=0)
+    commands = plan_economy(view)
+
+    moves = [c for c in commands.values() if enum_to_str(c.action) == "move"]
+    assert moves, f"攒够一批就该去墙线，实际指令 {[enum_to_str(c.action) for c in commands.values()]}"
+
+
+def test_wall_first_mode_buys_wall_voucher_before_weapons_are_maxed() -> None:
+    """Given 墙优先模式、只有 1 座武器但已有 L1 围墙与 25 金币，When 规划经济，
+    Then 允许派人去买 20 金围墙券（用户取舍：墙 > 武器升级），且另一人仍在推进墙线。"""
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(10040, "railgun", 22, 22, 1000, level=1, attackPower=10, attackRange=6),
+        _role(10043, "wall", 19, 20, 1000, level=1),
+        _role(10010, "worker", 20, 18, 220),  # 离蓝格最近 → 建造者
+        _role(10011, "worker", 7, 6, 220, backpack=["stone"] * 3),  # 攒够一批 → 推进墙线
+    ]
+    view = _wall_first_view(roles=roles, zones=[_vendor(30, 30), _shop(7, 5)], gold=25)
+    commands = plan_economy(view)
+
+    buys = [c for c in commands.values() if enum_to_str(c.action) == "buy"]
+    actions = [enum_to_str(c.action) for c in commands.values()]
+    assert buys, f"武器未满也该买围墙券，实际 {actions}"
+    assert buys[0].name == "WallUpgradeVoucher1", buys[0].name
 
 
 def main() -> int:

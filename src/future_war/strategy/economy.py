@@ -7,6 +7,11 @@
    整圈都是障碍（基地本体/出生点），工人永远无法与之相邻，只会原地绕圈。
 2. **建围墙**（黄区、背包有石头）：围墙阻挡机器人推进（任务书 §4.7.3「机器人
    攻击阻挡其移动的单位」），为武器争取输出回合。没有石头就先去采石头。
+   ``build.wall_first``（默认开）把围墙提为**全队主线**：只要还有墙没修完，
+   两个工人都反复「采石 → 砌墙」，不再因为「备够 4 块」就转去挖铜铁换钱
+   （线上实测的瓶颈是**砌墙速度**，不是金币）；攒批仍然保留（一次到位连砌），
+   但同一时刻只放一名工人离开矿区去墙线，另一名继续采石，杜绝两人同时在路上
+   的空窗。
 3. **买/用升级券**：金库充裕时把金币换成火力（1 级 → 2 级武器伤害翻倍）。
 4. **采集 → 贩卖**：石头既是围墙材料又能卖钱，其余按 copper > iron > stone。
 
@@ -51,6 +56,7 @@ WALL_MAX: Final = 12
 WALL_PROBE_BUDGET: Final = 12
 WALL_STONE_BATCH: Final = 3  # 背包攒够这么多石头才值得跑一趟墙线（一次到位连砌）
 WALL_PROBE_FROM: Final = 0  # 0 = 全天可铺墙（黄区已按配图确定，无需攒额度探路）
+WALL_FIRST: Final = True  # 与 config 默认值一致：墙优先（全队持续采石 + 两人都能砌墙）
 MAX_WEAPONS: Final = 3
 _WEAPON_ORDER: Final = ("rocket", "railgun", "gatling")
 _DEFAULT_PLAN: Final = ("rocket", "railgun", "railgun")
@@ -197,6 +203,16 @@ def _weapon_cells_free(view: WorldView, state: EconomyState) -> bool:
     return bool(_free_cells(standable_cells(view, free), state.failed_build_cells))
 
 
+def _any_weapon_cell_free(view: WorldView) -> bool:
+    """蓝区是否还剩任何可建造格（不看金币，也不用黑名单状态）。
+
+    ``build.day1_max_weapons`` 之外的兜底：蓝区推断出错时（一格都站不进去），
+    「等武器建满」等于永远不动手砌墙 —— 线上「墙 0/12」的一半原因就在这里。
+    """
+    free = frozenset(c for c in view.blue_build_cells() if not _occupied(view, c))
+    return bool(standable_cells(view, free))
+
+
 def _wall_candidates(
     view: WorldView, state: EconomyState, failed: set[Cell]
 ) -> tuple[Pos, ...]:
@@ -234,22 +250,28 @@ def _zone_box(cells: frozenset[Pos]) -> str:
 
 
 def _wall_gate(view: WorldView, config: Config | None, state: EconomyState) -> str:
-    """围墙当前卡在哪一步：直接回答「为什么这回合 issued=none」。"""
+    """围墙当前卡在哪一步：直接回答「为什么这回合 issued=none」。
+
+    前缀带上墙优先开关与全队囤石目标，线上一眼能看出「速度慢」时是模式没生效、
+    还是石头没囤够（``stone_quota``）。
+    """
+    mode = "on" if _flag(config, "build.wall_first", WALL_FIRST) else "off"
+    prefix = f"first={mode},quota={_stone_quota(view, state, config)}:"
     if not _flag(config, "build.wall_enabled", True):
-        return "disabled"
+        return prefix + "disabled"
     if len(view.own_walls()) >= _wall_target(view, state):
-        return "done"
+        return prefix + "done"
     if not state.wall_confirmed:
         if not _wall_ready(view, state, config):
             budget = _int_config(config, "build.wall_probe_budget", WALL_PROBE_BUDGET)
-            return f"probe_denied({state.wall_probes}/{budget})"
+            return prefix + f"probe_denied({state.wall_probes}/{budget})"
         if not _wall_window(view, config):
             start = _int_config(config, "build.wall_probe_from", WALL_PROBE_FROM)
             now = (view.round_no - 1) % DAY_LENGTH
-            return f"wait_window(r{now}<r{start})"
+            return prefix + f"wait_window(r{now}<r{start})"
     if not _wall_line_free(view, state):
-        return "line_empty"
-    return "ok"
+        return prefix + "line_empty"
+    return prefix + "ok"
 
 
 def _mine_note(
@@ -321,6 +343,11 @@ def _work_orders(
     只让一名工人施工：另一名从第 1 天起就持续采矿/贩卖，否则武器建满前没人
     攒钱、也没人备石头（旧实现的围墙分支永远排不上队）。建造者锁定到当前
     活着的工人，避免两名工人同时朝同一格跑。
+
+    墙优先模式（``build.wall_first``）下这条规矩只在**武器没插满之前**成立：
+    武器约 3~5 回合就能插满、且只有 3 座（用户策略），插满后两个工人全部并入
+    「采石 → 砌墙」管道（见 ``_plan_worker``）—— 围墙上限 12 堵、每堵 1 石头，
+    多一个人手就是多一倍砌墙速度。
     """
     if not workers:
         return {}
@@ -330,11 +357,30 @@ def _work_orders(
         cells = standable_cells(view, view.blue_build_cells())
         builder = _nearest_worker(workers, cells).id if cells else workers[0].id
         state.builder_id = builder
+    if _weapons_done(
+        view, config, max_weapons
+    ) and _stone_pipeline(view, state, config, "build", workers[0]):
+        # 武器已插满 + 墙管道可用：两人都是「建造者」，谁都可能被派去砌墙。
+        # 注意必须同时看管道是否真的开着（有石矿、还有墙要修），否则无矿场景下
+        # 全队会一起发呆、连券都不去买（回归 test_buys_*_voucher）。
+        return {w.id: "build" for w in workers}
     orders[builder] = "build"
-    shop = _shopper(view, workers, max_weapons, orders[builder], state, config)
+    shop = _shopper(view, workers, orders[builder], max_weapons, state, config)
     if shop is not None:
         orders[shop.id] = "shop"
     return orders
+
+
+def _weapons_done(view: WorldView, config: Config | None, max_weapons: int) -> bool:
+    """武器阶段是否结束：3 座插满，或蓝区已无格可建（推断错误时不该永远等武器）。
+
+    用户策略是「先把 3 座武器插满 → 之后两个工人全部进墙管道」，因此这是
+    「谁去砌墙」的总闸门。**金币不足不算结束**：那时更该去挖石头把墙砌起来
+    （用户取舍：第一夜靠墙活下来），而不是全队干等金币。
+    """
+    if len(view.own_weapons()) >= max_weapons:
+        return True
+    return not _any_weapon_cell_free(view)
 
 
 def _roll_probe_day(view: WorldView, state: EconomyState) -> None:
@@ -380,17 +426,71 @@ def _wall_ready(view: WorldView, state: EconomyState, config: Config | None) -> 
     return state.wall_probes < _int_config(config, "build.wall_probe_budget", WALL_PROBE_BUDGET)
 
 
+def _stone_quota(view: WorldView, state: EconomyState, config: Config | None) -> int:
+    """墙优先模式下**全队**要持续囤到的石头量：``wall_stone_batch × 工人数``。
+
+    目标量按人头算：两个工人各要能带满一批（各 3 块 → 全队 6 块）才同时开工；
+    光备 ``economy.stone_reserve``（4 块）只够一个人走一趟，另一个就断料了。
+    同时**不低于** ``economy.stone_reserve``（运维旋钮仍然生效，留出的石头只多不少），
+    上限是「剩余墙数」（一堵墙 1 块石头），别囤超过剩下的工程量。
+    """
+    batch = _int_config(config, "build.wall_stone_batch", WALL_STONE_BATCH)
+    hands = max(1, len(view.own_workers()))
+    reserve = max(0, _int_config(config, "economy.stone_reserve", STONE_RESERVE))
+    remaining = max(0, _wall_target(view, state) - len(view.own_walls()))
+    return min(remaining, max(batch * hands, reserve))
+
+
 def _stone_reserve(view: WorldView, state: EconomyState, config: Config | None) -> int:
     """手里要留住的石头数（其余可以卖）：够修完剩下的墙，且不超过 ``economy.stone_reserve``。
 
     留一点就够：真正的瓶颈是「不知道黄区在哪」，不是石头不够；囤 12 块只会把
     白天的产出全锁在背包里（用户真机实测：金币 0、白天无产出）。
+
+    墙优先模式（``build.wall_first``）下换成 ``_stone_quota``：全队每个工人都要
+    能各带一批，否则总有一人在等料（线上实测「墙建得太慢」的直接原因）。
     """
     if not _flag(config, "build.wall_enabled", True):
         return 0  # 不修墙就不必留石头，全部可以换钱
+    if _flag(config, "build.wall_first", WALL_FIRST):
+        return _stone_quota(view, state, config)
     remaining = max(0, _wall_target(view, state) - len(view.own_walls()))
     cap = _int_config(config, "economy.stone_reserve", STONE_RESERVE)
     return min(remaining, max(0, cap))
+
+
+def _wall_batch_held(worker: Role, config: Config | None) -> bool:
+    """这名工人是否已攒够一整批石头（够 → 值得专程跑一趟墙线连砌）。"""
+    batch = _int_config(config, "build.wall_stone_batch", WALL_STONE_BATCH)
+    return worker.backpack.count("stone") >= max(1, batch)
+
+
+def _stone_pipeline(
+    view: WorldView, state: EconomyState, config: Config | None, order: str, worker: Role
+) -> bool:
+    """这名工人本回合是否走「采石 → 砌墙」管道（墙优先模式的核心闸门）。
+
+    条件（缺一不可）：墙优先模式开、这名工人有资格施工（``order``）、
+    场上还有墙要修、武器阶段已结束（先把 3 座武器插满，用户策略）、
+    而且**场上真有矿可采**（没矿时不能为了囤石头放弃贩卖，否则金币与石头双输）。
+    """
+    if not _flag(config, "build.wall_first", WALL_FIRST):
+        return False
+    if order not in ("build", "econ", "shop"):
+        return False
+    if not _flag(config, "build.wall_enabled", True):
+        return False
+    if len(view.own_walls()) >= _wall_target(view, state):
+        return False
+    if not view.mines("stone"):
+        return False  # 没石矿 → 这条管道走不通，交回原有优先级
+    if not _weapons_done(
+        view, config, _int_config(config, "build.day1_max_weapons", MAX_WEAPONS)
+    ):
+        return False
+    # 今天已把探路额度烧光（还不确定黄区在哪）→ 别再无限采石，回去做能变现的
+    # 铜/铁（墙优先不等于「把整支队伍耗在一条还没验证过的施工线上」）。
+    return _wall_ready(view, state, config)
 
 
 def _flag(config: Config | None, key: str, default: bool) -> bool:
@@ -410,20 +510,33 @@ def _nearest_worker(workers: list[Role], cells: frozenset[Pos]) -> Role:
 def _shopper(
     view: WorldView,
     workers: list[Role],
-    max_weapons: int,
     builder: str,
+    max_weapons: int,
     state: EconomyState,
     config: Config | None = None,
 ) -> Role | None:
-    """武器建满、防线铺完且金币够买券时，指派离武器商店最近的**非建造者**采购。
+    """武器建满后，指派离武器商店最近的**非建造者**去采购升级券。
 
     建造者不参与采购：否则它一去一回，武器/围墙的施工就停摆，另一名工人又没
     被授权铺墙（旧实现两名工人偶尔会抢同一格围墙）。
+
+    墙优先模式（``build.wall_first``）下放宽武器闸门：只要场上已有可升级的
+    **围墙**、且同队还有另一名工人在推进墙线，就允许武器未满时派一人去买
+    20 金的围墙券（用户取舍：**墙 > 武器升级**）。不抢全队人手是硬条件 ——
+    两个工人同时走掉，墙与石头就都停了；所以只在「除采购者外还有别人在墙线上」
+    时才放行，否则宁可先砌墙、回头再买券。
     """
-    if len(view.own_weapons()) < max_weapons:
+    if len(view.own_weapons()) < max_weapons and not _flag(
+        config, "build.wall_first", WALL_FIRST
+    ):
         return None
-    if affordable_voucher(view, view.gold(), config) is None:
+    voucher = affordable_voucher(view, view.gold(), config)
+    if voucher is None:
         return None  # 没有「买得起又用得到」的券（20 金围墙券也算）就别派人去商店
+    if not _wall_upgrade_voucher(voucher):
+        # 武器/基地券：本来就要求武器建满，闸门见上
+        if len(view.own_weapons()) < max_weapons:
+            return None
     # 注意：**不能**用「防线还没铺完」挡住采购。围墙目标 12 堵本来就常修不满，
     # 旧判断等于永久占住采卖工人 → 武器永远停在 level1（真机实测正是如此：
     # 基地在夜里被推平，而金币攒着没处花）。升到 level2/3 直接翻倍夜里的输出，
@@ -432,7 +545,44 @@ def _shopper(
     candidates = [w for w in workers if w.id != builder]
     if shop is None or not candidates:
         return None
+    # 错峰闸门只在「另一个人真的在砌墙」时才成立：若墙管道本身没开（武器还没插满
+    # 且金币不够、或场上没矿），派谁去买券都不会抽走墙线上的人手。
+    if (
+        candidates
+        and _flag(config, "build.wall_first", WALL_FIRST)
+        and _stone_pipeline(view, state, config, "build", candidates[0])
+        and not _spare_wall_hand(view, state, config, candidates)
+    ):
+        return None  # 采购会抽走墙线上最后一个人手 → 先砌墙，券下次再买
     return min(candidates, key=lambda w: (chebyshev(w.pos, shop), w.id))
+
+
+def _wall_upgrade_voucher(voucher: str) -> bool:
+    """该券是否用于升级**围墙**（墙优先模式下唯一允许插队采购的种类）。"""
+    from future_war.strategy.builder import _VOUCHERS  # 局部导入：避免模块级耦合
+
+    entry = _VOUCHERS.get(voucher)
+    return entry is not None and entry[0] == "wall"
+
+
+def _spare_wall_hand(
+    view: WorldView,
+    state: EconomyState,
+    config: Config | None,
+    candidates: list[Role],
+) -> bool:
+    """除采购者外是否还有人手在推进墙线（有 → 可以抽一个人去买券）。
+
+    判定「在推进」= 该工人已经在候选墙格旁（下一回合就能砌），或手里攒够了
+    一整批石头（马上会去墙线）。两人规模下，这条就是「不许两人同时离开工地」。
+    """
+    batch = _int_config(config, "build.wall_stone_batch", WALL_STONE_BATCH)
+    line = frozenset(_wall_candidates(view, state, state.failed_build_cells))
+    return any(
+        w.backpack.count("stone") >= batch
+        or any(chebyshev(w.pos, cell) == 1 for cell in line)
+        for w in candidates
+    )
 
 
 def _plan_worker(
@@ -446,18 +596,14 @@ def _plan_worker(
 ) -> tuple[RoleCommand | None, Pos | None]:
     """按职责产出（指令 | 移动目标）。
 
-    优先级（用户真机实测后重排，见下）：建造武器 → **顺路砌墙** → **贩卖（有整批
-    货就先去小贩）** → 专门跑一趟墙位 → 买券 → 采集。
+    优先级：建造武器 → 用券 → **顺路砌墙（零行程）** → 采购 → 贩卖 →
+    墙优先模式下「攒够一批 + 错峰」就专程跑墙线 → 专门跑墙位（旧闸门）→ 采集。
 
-    为什么把经济排在「专门跑墙位」前面：旧顺序里只要背包有 1 块石头，采卖工人就
-    一直往墙线跑，而它为了修墙又总在采石 —— 结果**永远不去小贩**，金币从第 5 回合
-    起就是 0，白天再无产出；同时探路把当天额度烧光（`wall:probe-denied`），墙还是
-    0/12。现在：
-
-    * **顺路砌墙**（已经在候选格旁边）永远允许 —— 零额外行程成本；
-    * 有整批货（``economy.sell_batch``）就**先去卖**，途中不会被墙打断；
-    * 专门跑墙位只在**空手**（没有待卖矿石）时做，避免「挖一格 → 跑墙线 → 再挖一格」
-      的来回空转；已确认过合法墙位（``wall_confirmed``）则值得专程去铺。
+    墙优先模式（``build.wall_first``，用户策略「第一夜先活下去、全力砌墙」）：
+    武器插满后**两个工人**都走这条管道 —— 攒批仍然保留（一次到位连砌，避免
+    「采一块砌一块」的来回空转），但同一时刻最多放一个人离开矿区去墙线：
+    谁先攒够一批谁去砌，另一个接着采石。线上实测的瓶颈是**砌墙速度**，不是金币，
+    所以这一模式下石头永不「备够就变现」。
     """
     if order == "build":
         plan = _plan_build_weapon(view, config, worker, max_weapons, state.failed_build_cells)
@@ -483,16 +629,27 @@ def _plan_worker(
     sold = _plan_sell(view, worker, stone_keep, config)
     if sold is not None:
         return sold
+    if _stone_pipeline(view, state, config, order, worker):
+        # 谁攒够一批谁就去墙线；若同队已经有人在墙线上推进，本轮留在矿里接着采，
+        # 保证「任意时刻至少有一个工人在推进墙」而不是两人同时在路上。
+        if _wall_batch_held(worker, config) and not _line_already_held(
+            view, state, config, worker
+        ):
+            plan = _plan_build_wall(view, config, worker, state, adjacent_only=False)
+            if plan is not None:
+                return plan
+        return _plan_collect(
+            worker, _preferred_mine(view, worker, order, mine, need_stone=True)
+        )
     # 专门跑墙位：已确认过合法墙位（值得专程铺线），或已进入「铺墙时段」
     # （``build.wall_probe_from``，默认白天第 45 回合起）。上午留给经济：挖矿→贩卖→
     # 买券，下午石头也攒下了，再专心试推断出来的黄区。
     # 只在「手上没有铜铁（正在攒的那批货已脱手）」时才专程跑墙位：否则挖一格就
     # 被墙位拉走，永远攒不满一趟的货量，金币也就永远上不去（真机实测金币卡死在 45）。
-    batch = _int_config(config, "build.wall_stone_batch", WALL_STONE_BATCH)
     if (
         wall_ok
         and _cargo(worker) == 0
-        and worker.backpack.count("stone") >= batch  # 攒够一批再去，别采一块跑一趟
+        and _wall_batch_held(worker, config)  # 攒够一批再去，别采一块跑一趟
         and (state.wall_confirmed or _wall_window(view, config))
     ):
         plan = _plan_build_wall(view, config, worker, state, adjacent_only=False)
@@ -502,6 +659,35 @@ def _plan_worker(
     return _plan_collect(worker, _preferred_mine(view, worker, order, mine, need_stone))
 
 
+def _line_already_held(
+    view: WorldView, state: EconomyState, config: Config | None, worker: Role
+) -> bool:
+    """除 ``worker`` 外是否已有人在墙线上推进（在 → 本人先别走，继续采石）。
+
+    错峰闸门：两名工人同时背上石头往墙线跑，矿区就空了，回来时同样一起空手 ——
+    砌墙速度反而下降。让「已经在墙格旁」或「已攒够一批且更近墙线」的同伴先去，
+    另一个守住采石产能。只要没人推进，本人立刻动身（不会互相等到天荒地老）。
+    """
+    batch = _int_config(config, "build.wall_stone_batch", WALL_STONE_BATCH)
+    pending = [
+        w
+        for w in view.own_workers()
+        if w.id != worker.id and w.backpack.count("stone") >= max(1, batch)
+    ]
+    if not pending:
+        return False
+    line = frozenset(_wall_candidates(view, state, state.failed_build_cells))
+    if not line:
+        return False
+
+    def distance(w: Role) -> int:
+        return min(chebyshev(w.pos, cell) for cell in line)
+
+    # 同伴比我更接近墙线（或同距但 id 更小）→ 让它先把这批砌完，我接着采。
+    # 同距用 id 破平局：否则两人互相「让路」，谁也不去砌墙。
+    return min((distance(w), w.id) for w in pending) < (distance(worker), worker.id)
+
+
 def _needs_stone(
     view: WorldView, state: EconomyState, config: Config | None, order: str, worker: Role
 ) -> bool:
@@ -509,15 +695,33 @@ def _needs_stone(
 
     旧实现是「只要还有墙没修就永远优先采石」，于是石头一直占着背包、卖不出去，
     金币从开局第 5 回合起恒为 0。改成只看储备量：备够 2 块就转去挖铜/铁换钱。
+
+    墙优先模式（``build.wall_first``）反过来：只要墙没修完就**一直**采石
+    （目标量 ``wall_stone_batch × 工人数``），因为线上实测瓶颈是砌墙速度而非金币。
     """
     if not _flag(config, "build.wall_enabled", True):
         return False
     if order not in ("build", "econ", "shop"):
         return False
+    wall_first = _flag(config, "build.wall_first", WALL_FIRST)
+    if wall_first:
+        # 墙优先：武器阶段结束（插满 3 座 / 蓝区无格）后全队持续采石，直到囤够
+        # 「每名工人一批」。有人攒满一批却不能动身时（比如同伴正在墙线），其余人
+        # 继续采石 —— 始终有料可用。
+        max_weapons = _int_config(config, "build.day1_max_weapons", MAX_WEAPONS)
+        if not _weapons_done(view, config, max_weapons):
+            return False
+        total_stone = sum(w.backpack.count("stone") for w in view.own_workers())
+        if total_stone < _stone_quota(view, state, config):
+            return True
+        batch = _int_config(config, "build.wall_stone_batch", WALL_STONE_BATCH)
+        return not any(w.backpack.count("stone") >= max(1, batch) for w in view.own_workers())
+    # 旧行为（``build.wall_first=false``）原样保留：建造者手上还有武器要建就先
+    # 专心攒金币，别去挖石头。
     if order == "build" and len(view.own_weapons()) < _int_config(
         config, "build.day1_max_weapons", MAX_WEAPONS
     ):
-        return False  # 建造者手上还有武器要建 → 先专心攒金币，别去挖石头
+        return False
     # **按全队存石量**判断，而不是各人手里的量：储备是「全队备够」的概念，
     # 否则 2 个工人各囤 4 块（共 8 块）才罢休 —— 真机实测就是「只采石头、
     # 一整天没有铜铁收入」。全队够了就让所有人转去挖铜/铁换钱。
