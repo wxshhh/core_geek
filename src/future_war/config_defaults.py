@@ -32,6 +32,8 @@ DEFAULT_CONFIG: Final[dict[str, JsonValue]] = {
         "wall_breach_first": True,
         "wall_breach_rearm_threat": True,
         "wall_gap_min_walls": 2,
+        "wall_continuity_first": True,
+        "wall_done_when_no_cell": True,
     },
     "combat": {
         "target_priority": ["boss", "large", "medium", "small"],

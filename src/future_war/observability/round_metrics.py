@@ -54,6 +54,13 @@ def metric_fields(
     可得的替代信息是 ``scoreDelta`` = ``totalScore`` 相对**上一回合**的差值（由
     调用方跨回合持有并传入 ``previous_score``；没有上一回合时为 None）。它至少
     能让内部 LLM 看出「本轮有没有拿到分」，而不是盯着一个恒为 ``-`` 的 kills。
+
+    ``errors`` 只给**条数**，因此额外派生 ``errorCodes`` / ``errorDesc``：判题器
+    的 ``errors`` 数组里混着多种错误码（1=任务超时、2=答案错误、4=指令错误、
+    5=LLM 超限），而只有 errorCode 4 会消耗「累计 5 次即停止调度该队」的配额。
+    2026-09-17 的线上事故就卡在这一步 —— 日志只有 ``errors=1``，无法区分「我们
+    发了非法指令」（必须立刻修）与「任务答错了」（纯失分）。码与描述一起打印后，
+    下一局可以直接指认，不必再靠推测。
     """
     team = request.get("teamOur")
     team = team if isinstance(team, Mapping) else {}
@@ -67,7 +74,7 @@ def metric_fields(
         ),
         None,
     )
-    errors = request.get("errors")
+    error_list = _error_list(request.get("errors"))
     score = _as_int(team.get("totalScore"))
     return {
         "gold": _as_int(team.get("goldNum")),
@@ -78,8 +85,36 @@ def metric_fields(
         ),
         "baseHP": base_hp,
         "rolesAlive": len(roles),
-        "errors": len(errors) if isinstance(errors, list) else 0,
+        "errors": len(error_list),
+        "errorCodes": _error_codes(error_list),
+        "errorDesc": _error_desc(error_list),
     }
+
+
+def _error_list(raw: object) -> list[object]:
+    """``errors`` 字段规范化为列表（缺失/类型不对 → 空列表，绝不抛）。"""
+    return list(raw) if isinstance(raw, list) else []
+
+
+def _error_codes(errors: list[object]) -> str | None:
+    """错误码串（如 ``4`` / ``1,2``）；无错误返回 None（渲染 ``-``）。"""
+    codes = [
+        str(item.get("errorCode"))
+        for item in errors
+        if isinstance(item, Mapping) and item.get("errorCode") is not None
+    ]
+    return ",".join(codes) if codes else None
+
+
+def _error_desc(errors: list[object]) -> str | None:
+    """第一条非空描述（压成单行、截断）；无则 None。"""
+    for item in errors:
+        if not isinstance(item, Mapping):
+            continue
+        text = item.get("description")
+        if isinstance(text, str) and text.strip():
+            return " ".join(text.split())[:48]
+    return None
 
 
 class RoundObserver:

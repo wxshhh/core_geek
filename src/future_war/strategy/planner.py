@@ -12,6 +12,7 @@ from typing import Final
 
 from future_war.config import Config
 from future_war.models import Pos, RoleCommand, enum_to_str
+from future_war.core.command_contract import structural_error
 from future_war.core.nav import resolve_moves
 from future_war.core.world_map import chebyshev, in_bounds
 from future_war.core.world_view import WorldView
@@ -134,6 +135,52 @@ def _fallback_step(
     return min(free, key=lambda cell: (chebyshev(cell, goal), cell.x, cell.y))
 
 
+def _drop_structural_illegal(commands: dict[int, RoleCommand]) -> tuple[str, ...]:
+    """发送前自检：丢掉结构非法的指令，并留下 ``illegal_dropped=`` 诊断。
+
+    为什么必须有这道闸（任务书 §八）：**单队异常累计 5 次就停止调度该队**，而
+    「指令错误」＝ 字段缺失/动作码不可识别 —— 一条缺 ``targetPos`` 的 ``move`` 就
+    能烧掉一次配额，代价远大于少发一条指令。判据与判题器口径共用
+    ``core/command_contract``（与 ``sim.commands`` 同表），所以这里拦得住的，
+    真机也一定会判非法。
+
+    注意**只**拦结构问题：对非黄区格 ``build``、金币不足 ``buy`` 之类属于
+    「指令执行失败」，判题器只标记该条无效、不计异常，绝不能在这里误删
+    （否则我们会静默失去整条施工线）。
+    """
+    dropped: list[str] = []
+    for uid, command in list(commands.items()):
+        reason = structural_error(command)
+        if reason is None:
+            continue
+        del commands[uid]
+        dropped.append(f"{uid}:{reason}")
+    if not dropped:
+        return ()
+    return ("illegal_dropped=" + "+".join(dropped),)
+
+
+def _error_notes(view: WorldView) -> tuple[str, ...]:
+    """把判题器本轮的 ``errors`` 原文压成一行（无错误则空）。
+
+    为什么要在 ``D-02`` 里复述：真机上唯一可见通道是平台捕获的 stderr，而
+    ``M-01`` 只给「本轮几条错误」的**计数**。2026-09-17 的线上事故正是被这个
+    计数卡住 —— 只能看到 ``errors=1``，分不清是 errorCode 4（指令错误，会烧掉
+    5 次配额）还是 errorCode 2（答案错误，纯任务侧失分），排查全靠猜。这里连
+    ``errorCode`` 与描述一起打印，下一局直接指认。
+    """
+    items = []
+    for error in view.errors():
+        description = " ".join(str(getattr(error, "description", "")).split())[:48]
+        items.append(
+            f"{getattr(error, 'errorCode', '?')}:{description}" if description
+            else str(getattr(error, "errorCode", "?"))
+        )
+    if not items:
+        return ()
+    return ("errs=" + ",".join(items),)
+
+
 def plan_turn(
     view: WorldView,
     config: Config | None = None,
@@ -157,6 +204,7 @@ def plan_turn(
         commands.update(
             plan_offense(view, config, frozenset(commands), offense_state)
         )
+        illegal_notes = _drop_structural_illegal(commands)
         move_notes = _resolve_global_moves(view, commands)
         attacks = sum(
             1 for c in commands.values() if enum_to_str(c.action) == "attack"
@@ -165,7 +213,9 @@ def plan_turn(
             commands=commands,
             notes=(
                 f"night weapons={len(view.own_weapons())} attacks={attacks}",
+                *illegal_notes,
                 *move_notes,
+                *_error_notes(view),
             ),
         )
     commands = plan_economy(view, config, economy_state)
@@ -194,7 +244,9 @@ def plan_turn(
         commands.update(treasure)
         if treasure:
             notes.append(f"treasure={len(treasure)}")
+    notes.extend(_drop_structural_illegal(commands))
     notes.extend(_resolve_global_moves(view, commands))
+    notes.extend(_error_notes(view))
     return TurnPlan(
         commands=commands,
         prompt=task.prompt,

@@ -274,6 +274,79 @@ def test_wall_fixer_reserve_blocks_buying() -> None:
     assert plan_consumables(_view(roles=roles, gold=10), config) == {}
 
 
+def test_use_commands_always_carry_the_item_in_backpack() -> None:
+    """Given 队里没人持有任何消耗品 / 修复包只在另一名工人手上，
+    When 规划消耗品，Then 绝不出现「背包里没有却发 use」的指令。
+
+    为什么单独钉这条（issue #2 A 项排查）：``use`` 的名称若不在背包里，判题器会判
+    **指令非法**（errorCode 4），而任务书 §八 规定单队异常累计 5 次即停止调度该队。
+    这是最贵的一类错误，所以用一条反向断言把它钉死：没人有包 → 一条 use 都不发；
+    只有 10010 有包 → 发 use 的必须是 10010、且目标必须是那面**残血己方围墙**。
+    """
+    roles = [
+        STATION,
+        _role(10010, "worker", 20, 21, 220, backpack=[]),
+        _role(10012, "worker", 20, 19, 220, backpack=[]),
+        _role(40000, "wall", 20, 22, 300, level=1),
+    ]
+    assert plan_consumables(_view(roles=roles, gold=0)) == {}, "没人有包就不该有任何 use"
+
+    roles[1] = _role(10010, "worker", 20, 21, 220, backpack=["WallFixer"])
+    commands = plan_consumables(_view(roles=roles, gold=0))
+    assert set(commands) == {10010}, f"只有 10010 持有修复包，实际 {sorted(commands)}"
+    command = commands[10010]
+    assert enum_to_str(command.action) == "use"
+    wall = _view(roles=roles).own_walls()[0]
+    assert command.targetPos == (wall.pos,), "targetPos 必须指向那面己方围墙"
+
+
+def test_wall_fixer_never_targets_full_health_or_foreign_wall() -> None:
+    """Given 身旁只有**满血**己方围墙、以及一面残血**敌方**围墙，
+    When 规划消耗品，Then 不发 use（满血墙不需要修、敌方墙修不了）。
+
+    线上事故里的另一个候选：``use WallFixer`` 的 ``targetPos`` 不是「待修复的己方
+    围墙」（跑题到满血墙/敌方墙/空格）同样会被判非法。``wall_fixer_target`` 只挑
+    ``view.own_walls()`` 里血量 ≤ ``consumables.wall_hp_ratio`` 的墙，这里用最接近的
+    两种反例钉住它。
+    """
+    roles = [
+        STATION,
+        _role(10010, "worker", 20, 21, 220, backpack=["WallFixer"]),
+        _role(40000, "wall", 20, 22, 1000, level=1),  # 满血己方墙：不该修
+    ]
+    assert plan_consumables(_view(roles=roles, gold=0)) == {}, "满血己方墙不该修"
+
+    # 敌方残血围墙就在旁边：它不在 own_walls() 里，因此同样进不了修复目标
+    data = {
+        "roundNo": DAY,
+        "mapInfo": {"width": 41, "height": 32, "zones": SHOP},
+        "teamOur": {
+            "type": "challenger",
+            "teamId": "t",
+            "teamName": "t",
+            "goldNum": 0,
+            "totalScore": 0,
+            "roles": roles,
+        },
+        "teamEnemy": {
+            "roles": [_role(90000, "wall", 20, 22, 300, level=1)],
+        },
+        "robot": {"roles": []},
+        "phaseTask": "",
+        "lastRoundRoleActionResults": {},
+        "lastSummonTreasureResult": 0,
+        "llmResp": "",
+        "worldNews": {"officialNews": "", "folkLegends": ""},
+        "lastCmdResult": "",
+        "vendorShopList": [],
+        "weaponShopList": [],
+        "errors": [],
+    }
+    view = WorldModel().apply_round(parse_request(data))
+    assert [wall.health for wall in view.own_walls()] == [1000]
+    assert plan_consumables(view, None) == {}, "敌方的残血墙不是我们的修复目标"
+
+
 def main() -> int:
     """零依赖测试运行器：执行全部 test_* 函数并报告。"""
     test_funcs = [

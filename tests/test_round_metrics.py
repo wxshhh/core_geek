@@ -98,8 +98,33 @@ def test_metric_fields_tolerate_missing_and_wrong_types() -> None:
         "baseHP": None,
         "rolesAlive": 0,
         "errors": 0,
+        "errorCodes": None,
+        "errorDesc": None,
     }
     assert metric_fields({"teamOur": "nope", "errors": "nope"})["rolesAlive"] == 0
+    assert metric_fields({"errors": "nope"})["errorCodes"] is None
+
+
+def test_metric_fields_expose_error_codes_and_description() -> None:
+    """Given 判题器本轮回了 errorCode 4 与 2（各带描述），When 取指标字段，
+    Then ``errorCodes=4,2`` 且 ``errorDesc`` 是第一条描述（压成单行、截断）。
+
+    只有 errorCode 4（指令错误）会消耗「累计 5 次即停止调度该队」的配额，而
+    ``errors`` 只给条数 —— 2026-09-17 的线上事故正是卡在这里，必须把码打出来。
+    """
+    fields = metric_fields(
+        {
+            "errors": [
+                {"errorCode": 4, "description": "bad\n  command"},
+                {"errorCode": 2, "description": "wrong answer"},
+            ]
+        }
+    )
+    assert fields["errors"] == 2
+    assert fields["errorCodes"] == "4,2"
+    assert fields["errorDesc"] == "bad command"
+    assert metric_fields(SAMPLE_REQUEST)["errorCodes"] == "2"  # 样例里只有 errorCode 2
+    assert metric_fields({"errors": [{"description": "无码"}]})["errorCodes"] is None
 
 
 def test_observe_writes_jsonl_and_metric_line() -> None:

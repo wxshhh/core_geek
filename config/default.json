@@ -36,7 +36,9 @@
     "wall_first": true,
     "wall_breach_first": true,
     "wall_breach_rearm_threat": true,
-    "wall_gap_min_walls": 2
+    "wall_gap_min_walls": 2,
+    "wall_continuity_first": true,
+    "wall_done_when_no_cell": true
   },
   "combat": {
     "target_priority": [

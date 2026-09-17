@@ -255,6 +255,64 @@ def test_every_day_round_moves_at_least_one_role() -> None:
     )
 
 
+def test_full_match_has_no_structural_command_error_and_stable_wall_target() -> None:
+    """Given 本地模拟器跑一整局 StrategyBot vs ScriptedBot（seed 0，130 回合），
+    When 逐回合解析我方响应并读 D-02 notes，
+    Then 结构性指令错误恒为 0（= 真机 errorCode 4 为 0）且围墙分母恒定不变。
+
+    这条把 issue #2 的两件事一起钉住：
+
+    - **A**：判题器口径的「指令错误」只由结构问题触发（任务书 §八）。我们跑满
+      130 回合，解析器一条结构问题都没报 —— 说明建墙/修墙路径上没有非法指令，
+      线上那 3 次 ``errors=1`` 不是 errorCode 4；同时**规则性失败**（对非黄区格
+      build）必然存在（本局也会出现），它按 §八不计异常，正是两者的分界线。
+    - **B**：``walls=N/<分母>`` 的分母必须恒定。旧实现拿「剩余候选格」当分母，
+      每砌一堵墙分母就少 1，于是出现线上日志里的 ``walls=7/6 (done)``（分子大于
+      分母、误判完工停工）。
+    """
+    from future_war.sim import ScriptedBot, World, engine, make_layout
+    from future_war.sim.judge import TEAM_ORDER, TeamDriver, build_request
+    from future_war.sim.protocol import normalize_response, parse_commands
+    from future_war.strategy import StrategyBot
+
+    config = load_config()
+    world = World(seed=0, layout=make_layout())
+    bot = StrategyBot(config)
+    bots = {"challenger": bot, "defender": ScriptedBot()}
+    drivers = {t: TeamDriver(team=t, bot=bots[t]) for t in TEAM_ORDER}
+    problems: list[str] = []
+    denominators: set[str] = set()
+    build_outside_yellow: list[tuple[int, int]] = []
+    while world.round_no < 130:
+        engine.begin_round(world)
+        commands = {}
+        for team in TEAM_ORDER:
+            d = drivers[team]
+            payload = normalize_response(d.bot(build_request(world, team, d)))
+            cmds, issues, _dropped = parse_commands(payload)
+            if team == "challenger":
+                problems.extend(issues)
+                for note in getattr(bot, "last_notes", ()):
+                    if note.startswith("walls=") and "/" in note:
+                        denominators.add(note.split("/", 1)[1])
+                # 取我方**自己推断的**黄区（bot._model 是跨回合世界模型，测试内直接读它）
+                yellow = bot._model.view().yellow_build_cells()
+                for cmd in cmds.values():
+                    if str(cmd.action) == "build" and cmd.name == "wall":
+                        if cmd.targetPos and cmd.targetPos[0] not in yellow:
+                            build_outside_yellow.append(cmd.targetPos[0].to_dict())
+            commands[team] = cmds
+        results = engine.resolve_round(world, commands, {t: set() for t in TEAM_ORDER})
+        for team in TEAM_ORDER:
+            drivers[team].last_results = dict(results[team])
+
+    assert not problems, f"出现结构性指令错误（真机 errorCode 4）: {problems}"
+    assert denominators == {"12"}, f"围墙分母必须恒定（线上事故是 6/8/12 抖动）: {denominators}"
+    assert not build_outside_yellow, (
+        f"build wall 的目标必须落在自己推断的黄区内: {build_outside_yellow}"
+    )
+
+
 def main() -> int:
     """零依赖测试运行器：执行全部 test_* 函数并报告。
 

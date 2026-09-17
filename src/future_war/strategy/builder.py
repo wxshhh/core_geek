@@ -157,6 +157,8 @@ def wall_line(
     threat: Pos | None = None,
     exclude: frozenset[Pos] | set[Pos] | None = None,
     threat_dir: tuple[int, int] | None = None,
+    *,
+    include_built: bool = False,
 ) -> tuple[Pos, ...]:
     """围墙防线：**只围三面**（来袭面 + 两个相邻面），跳过背面。
 
@@ -168,6 +170,12 @@ def wall_line(
     - 背面**不建**（`threat_dir` 未知时退化为四面全建）
 
     位置按「到基地最近的方环」由内向外铺，因此防线连续；同环内按面分档排序。
+
+    ``include_built``（关键词专用，默认 ``False`` = 旧行为）：是否把**已经建好的
+    围墙格**也算进返回的防线里。默认排除它们是给「还要砌哪一格」用的；而算**分母**
+    （本局一共打算砌多少格，见 ``economy._wall_target``）时必须为 ``True`` ——
+    否则每砌一堵墙防线就短一格，目标数跟着缩水，最终出现线上事故里的
+    ``walls=7/6 (done)``：分母比分子还小、误判成完工并停了工。
     """
     base = view.base_pos()
     if base is None:
@@ -175,7 +183,8 @@ def wall_line(
     yellow = set(view.yellow_build_cells())
     if not yellow:
         return ()
-    blocked = {w.pos for w in view.own_walls()} | set(exclude or ())
+    built = {w.pos for w in view.own_walls()}
+    blocked = (set() if include_built else built) | set(exclude or ())
     block = _base_cells_of(view)
     center = base_center(view)
     direction = _as_direction(threat_dir) or _direction(center, threat)

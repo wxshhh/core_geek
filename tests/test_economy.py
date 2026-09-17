@@ -20,7 +20,7 @@ from future_war.models import Pos, enum_to_str, parse_request  # noqa: E402
 from future_war.core import WorldModel, chebyshev  # noqa: E402
 from future_war.strategy import plan_economy  # noqa: E402
 from future_war.strategy.builder import assign_controllers  # noqa: E402
-from future_war.strategy.economy import EconomyState  # noqa: E402
+from future_war.strategy.economy import EconomyState, _wall_candidates  # noqa: E402
 
 
 def _pos(x: int, y: int) -> dict[str, int]:
@@ -698,6 +698,167 @@ def test_idle_worker_rescued_toward_reachable_mine_is_logged() -> None:
     state = EconomyState()
     plan_economy(_view([_role(10010, "worker", 5, 5, 220)], gold=0), None, state)
     assert any("rescue=10010" in note for note in state.notes), state.notes
+
+
+def test_wall_target_is_direction_and_progress_invariant() -> None:
+    """Given 同一张地图、来袭方向从东改成西、且已经建好 7 堵墙，
+    When 取围墙目标数（分母），Then 结果完全相等（方向与施工进度都不影响它）。
+
+    回归线上事故（issue #2 B 项）：旧分母 = ``len(wall_line(...))``，而 ``wall_line``
+    既排除**已建成的墙**、又按来袭方向只取三面，于是日志里同时出现
+    ``walls=7/6 (done)``（分母被自己砌的墙吃掉了）和 ``walls=5/8``（方向一改分母就跳），
+    施工被误判「完工」而停工。
+    """
+    from future_war.strategy.economy import EconomyState, _wall_target
+
+    roles = [_role(10013, "station", 20, 20, 1500, level=1),
+             _role(10010, "worker", 20, 17, 220, backpack=["stone"] * 3)]
+    view = _view(roles)
+
+    east = EconomyState(); east.wall_dir = (1, 0)
+    west = EconomyState(); west.wall_dir = (-1, 0)
+    assert _wall_target(view, east) == _wall_target(view, west), "分母不得随来袭方向变化"
+
+    # 沿墙线先砌 7 堵墙（用户日志里 ``7/6`` 的那一刻）→ 分母仍不变
+    line = _wall_candidates(view, east, set())
+    assert len(line) >= 7, line
+    built = [
+        _role(40000 + index, "wall", cell.x, cell.y, 1000, level=1)
+        for index, cell in enumerate(line[:7])
+    ]
+    progressed = _view(roles + built)
+    assert _wall_target(progressed, east) == _wall_target(view, east), "砌墙不得让分母缩水"
+    assert not any("done" in note for note in _wall_plan_notes(progressed, east)), (
+        "砌了 7 堵墙还不该判完工（分母是固定 12）"
+    )
+
+
+def _wall_plan_notes(view, state):
+    """跑一次 ``plan_economy`` 并取出本回合 D-02 notes（测试内小工具）。"""
+    plan_economy(view, None, state)
+    return state.notes
+
+
+def test_wall_target_is_capped_by_config_wall_max() -> None:
+    """Given ``build.wall_max = 5``，When 取围墙目标数，Then 分母封顶到 5（运维旋钮生效）。"""
+    from future_war.strategy.economy import EconomyState, _wall_target
+
+    view = _view([_role(10013, "station", 20, 20, 1500, level=1)])
+    config = _config(build={"wall_max": 5})
+    assert _wall_target(view, EconomyState(), config) == 5
+
+
+def test_wall_done_when_no_candidate_cell_remains() -> None:
+    """Given 推断黄区里每一格都已被判非法（再无候选），但墙数远小于分母，
+    When 判断围墙是否收工，Then ``build.wall_done_when_no_cell=true`` 时收工、
+    置 false 时仍认为没收工（保留对比实验的能力）。
+
+    为什么要有这条：分母固定成四面总数（12）后，如果我们按 U 形只砌了三面、
+    黄区里再无候选，旧写法会永远认为「没建满」→ ``wall_first`` 的采石管道永不关闭
+    → 全队只采石不贩卖、金币锁死。
+    """
+    from future_war.strategy.economy import EconomyState, _wall_done
+
+    view = _view([_role(10013, "station", 20, 20, 1500, level=1)])
+    failed = {(c.x, c.y) for c in view.yellow_build_cells()}
+    assert _wall_done(view, EconomyState(failed_build_cells=failed), None) is True, (
+        "无候选格 → 收工"
+    )
+    off = _config(build={"wall_done_when_no_cell": False})
+    assert _wall_done(view, EconomyState(failed_build_cells=set(failed)), off) is False, (
+        "关掉该键则只在建满分母时收工"
+    )
+
+
+def test_continuity_prefers_cells_next_to_verified_wall() -> None:
+    """Given (20,18) 是**已建成过**的墙位（真机证明过那一片能建），
+    When 排候选，Then 与它相邻的候选格被提到最前（连续性优先）。
+
+    回归线上事故（issue #2 C 项）：同一圈连续多格 ``result_false``、换到另一组相邻格
+    才建成 —— 说明我们推断的黄区与真机有偏差，而真机的可建造区是**连通**的。沿已验证
+    格铺开的命中率远高于按环盲扫，能显著减少白跑一趟的失败建造。
+    """
+    from future_war.strategy.economy import EconomyState
+
+    roles = [_role(10013, "station", 20, 20, 1500, level=1),
+             _role(40000, "wall", 20, 18, 1000, level=1)]  # 只此一堵：不构成「缺口」
+    view = _view(roles)
+    plain = EconomyState(); plain.wall_dir = (1, 0)
+    state = EconomyState(); state.wall_dir = (1, 0)
+    plan_economy(view, None, state)  # 跑一回合：活墙被登记为「已验证格」
+
+    assert state.verified_wall_cells == {(20, 18)}, state.verified_wall_cells
+    first_plain = _wall_candidates(view, plain, set())[0]
+    first_verified = _wall_candidates(view, state, set())[0]
+    assert chebyshev(first_plain, Pos(20, 18)) > 1, "前提：纯环序并不会先挑它的邻格"
+    assert chebyshev(first_verified, Pos(20, 18)) == 1, (
+        f"相邻候选应排最前，实际 {first_verified}"
+    )
+
+    # 关掉该键 → 回退纯环序（运维可对比）
+    off = _config(build={"wall_continuity_first": False})
+    assert _wall_candidates(view, state, set(), off)[0] == first_plain
+
+    # 黑名单照旧压过连续性：被证伪的格不出现在候选里
+    assert Pos(20, 18) not in _wall_candidates(view, state, {(20, 18)})
+
+
+def test_no_mobile_units_reports_resource_gap_in_notes() -> None:
+    """Given 场上只剩基地、没有任何可移动单位（夜里单位阵亡的窗口），
+    When 规划经济，Then 不发任何指令，且 D-02 记下 ``mobile=w0,p0``。
+
+    这是 issue #2 D 项的核实结论：第 2 天前 ~20 帧 ``orders=`` 空、``issued=none``
+    的**资源性空窗** —— 单位阵亡后要等「次日白天开始后 20 回合」才在基地复活
+    （§4.5.2），这段窗口里根本没人可调度，属预期行为、不改逻辑；加这行诊断是为了
+    下一局一眼区分「没人可用」与「有人却不干活」。
+    """
+    from future_war.strategy.economy import EconomyState
+
+    state = EconomyState()
+    commands = plan_economy(_view([STATION]), None, state)
+    assert commands == {}, "没有可移动单位时确实没有任何指令"
+    assert any("mobile=w0,p0" in note for note in state.notes), state.notes
+    assert "orders=" in state.notes, state.notes
+
+
+def test_planner_drops_structural_illegal_command_and_reports_it() -> None:
+    """Given 某模块产出结构非法指令（``use DizzyWeapon`` 缺 ``targetPos``），
+    When 规划整回合，Then 该指令被丢弃、并以 ``illegal_dropped=`` 记入 D-02。
+
+    判据与判题器共用 ``core/command_contract``（任务书 §八：字段缺失即「指令错误」，
+    累计 5 次停止调度该队）。真机代价极高，所以宁可本地丢一条 + 大声记一行日志。
+    """
+    from future_war.models import RoleCommand
+    from future_war.strategy.planner import _drop_structural_illegal
+
+    commands = {
+        10010: RoleCommand(action="use", name="DizzyWeapon"),  # 缺 targetPos → 非法
+        10012: RoleCommand(action="move", targetPos=(Pos(5, 5),)),  # 合法
+    }
+    notes = _drop_structural_illegal(commands)
+    assert set(commands) == {10012}, commands
+    assert notes and notes[0].startswith("illegal_dropped=10010:"), notes
+
+
+def test_planner_reports_judge_error_codes_in_notes() -> None:
+    """Given 判题器本轮回了 ``errorCode=4``（指令错误）与 2（答案错误），
+    When 规划整回合，Then D-02 notes 给出 ``errs=4:…,2:…``（错误码 + 描述原文）。
+
+    2026-09-17 的事故就是卡在「只看得见 ``errors=1`` 的计数」：分不清是烧配额的
+    指令错误（4）还是纯任务侧失分的答案错误（2）。把码与描述打出来，下一局不必
+    再靠推测。
+    """
+    from future_war.strategy.planner import plan_turn
+
+    data = _request([STATION, _role(10010, "worker", 5, 5, 220)], zones=[_mine(6, 5)])
+    data["roundNo"] = 71  # 夜晚：走防御分支
+    data["errors"] = [
+        {"errorCode": 4, "description": "bad command"},
+        {"errorCode": 2, "description": "wrong answer"},
+    ]
+    view = WorldModel().apply_round(parse_request(data))
+    notes = plan_turn(view, None).notes
+    assert any(note.startswith("errs=4:bad command,2:wrong answer") for note in notes), notes
 
 
 def main() -> int:
