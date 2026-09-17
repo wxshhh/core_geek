@@ -13,6 +13,16 @@
    但同一时刻只放一名工人离开矿区去墙线，另一名继续采石，杜绝两人同时在路上
    的空窗。
 
+   **墙优先只占白天前段**（``build.wall_first_until_round``，默认 40）：白天第
+   ``< 40`` 回合保持上面的全队采石；第 ``>= 40`` 回合退出该模式，回到普通经济
+   （按 ``_plan_sell``/``sell_batch`` 采铜/铁并成批卖给小贩，把金币攒起来买券）。
+   线上事故 issue #2（2026-09-17）就是全天墙优先：全队一直采石 → 没人采铜铁 →
+   卖不出钱 → 连 20 金的围墙券都买不起 → 武器/围墙永远 L1 → 夜里单位成批阵亡。
+   退出模式只影响「要不要**主动**采石」（``_needs_stone`` 在窗口外一律返回否，
+   不再拿 ``economy.stone_reserve`` 当采石理由 —— 否则工人会被反复从铜矿拉回
+   石矿，收入起不来），**顺路砌墙（相邻即建）与破口/缺口优先重建照旧**
+   （见 ``_wall_first_active``）；窗口按天重开，次日白天第 1 回合重新生效。
+
    **白天修/重建被打掉的墙**（``build.wall_breach_first``，默认开）：夜里墙被攻破
    后，白天先把破口补回来 —— 破口是全场唯一**被敌人用行动证明过**能打通的位置，
    机器人夜里会沿同一条路再来。为此 ``EconomyState.wall_memory`` 记住我们砌过的
@@ -70,6 +80,11 @@ WALL_PROBE_BUDGET: Final = 12
 WALL_STONE_BATCH: Final = 3  # 背包攒够这么多石头才值得跑一趟墙线（一次到位连砌）
 WALL_PROBE_FROM: Final = 0  # 0 = 全天可铺墙（黄区已按配图确定，无需攒额度探路）
 WALL_FIRST: Final = True  # 与 config 默认值一致：墙优先（全队持续采石 + 两人都能砌墙）
+# 墙优先只占白天**前段**：白天第几回合（0 起，同 ``_wall_window`` 口径）之前是墙优先。
+# 线上事故 issue #2：全天墙优先 → 全队一直采石、没人采铜铁 → 卖不出钱 → 20 金围墙券
+# 买不起 → 武器/围墙永远 L1 → 夜里成批阵亡。用户策略是「第一夜先活下来」而不是
+# 「一整天只砌墙」：前 40 回合全力铺墙，之后转回普通经济赚钱买券。
+WALL_FIRST_UNTIL_ROUND: Final = 40
 # 与 config 默认值一致（三处必须同值：default.json / config_defaults.py / 这里）
 WALL_BREACH_FIRST: Final = True  # 破口（墙被攻破的格）优先重建
 WALL_BREACH_REARM_THREAT: Final = True  # 破口落在背面 → 允许推翻锁定的来袭方向
@@ -502,11 +517,28 @@ def _gap_cells(
     为什么要有这条：``wall_memory`` 只活在进程内，重启/换进程后记忆为空，破口就退化
     成一个普通的环序候选。但破口在几何上有明显特征 —— 左右（八邻域）至少两面墙已
     经立着，中间空一格。用它就能在零记忆下认出「这里本该有墙」。
+
+    **计数口径**（线上 ``wall_fix=gap(N)`` 从不归零的原因）：只统计「真的还能建」的格
+    —— 已被己方/敌方单位占据、已进失败黑名单（判题器回过 false 的非法格）、或落在
+    ``wall_refuted_dist`` 那一环的格，都**永远建不上**，却会被判题器的快照一直显示为
+    「两侧有墙的空格」。旧写法把它们一律计入 → ``gap(N)`` 永久 > 0，日志读起来像
+    「还有 N 个缺口没补」，实际一个都补不了（纯统计口径问题，不涉及建造决策）。
+    这里复用 :func:`_occupied_and_failed` 与 ``_wall_candidates`` 同一套过滤，
+    保证「缺口的数字」与「候选格里还能建的格」口径一致。
+
+    排序用途不受影响：``_prioritized_line`` 传进来的 ``line`` 本就已按同一套规则过滤
+    过，这些判断只是幂等的重复。
     """
     minimum = max(2, _int_config(config, "build.wall_gap_min_walls", WALL_GAP_MIN_WALLS))
     live = {wall.pos for wall in view.own_walls()}
+    blocked = _occupied_and_failed(view, state.failed_build_cells)
+    base_cells = tuple(view.base_cells())
     gaps = []
     for cell in line:
+        if cell in blocked or _occupied(view, cell):
+            continue  # 有单位占着 / 已证伪：建不上，不该算作「还没补的缺口」
+        if base_cells and min(chebyshev(cell, b) for b in base_cells) in state.wall_refuted_dist:
+            continue  # 整圈已被证伪，搜索本来就会跳过它
         built = sum(1 for dx, dy in _NEIGHBORS if Pos(cell.x + dx, cell.y + dy) in live)
         if built >= minimum:
             gaps.append(cell)
@@ -524,11 +556,22 @@ def _damaged_walls(view: WorldView, config: Config | None) -> int:
 
 
 def _wall_fix_note(view: WorldView, state: EconomyState, config: Config | None) -> str:
-    """D-02 的 ``wall_fix=breach(N)|gap(G)|repair(M)`` 字段（见 ``_diagnose``）。"""
+    """D-02 的 ``wall_fix=breach(N)|gap(G)|repair(M)`` 字段（见 ``_diagnose``）。
+
+    ``gap`` 只统计**还能补的**缺口，两条口径修正（都只影响这行诊断，不影响建造）：
+
+    1. 建不上的格不计入（:func:`_gap_cells` 里按候选格同一套规则过滤）—— 被单位
+       占着的格、已进失败黑名单的非法格、整圈被证伪的格，判题器快照永远显示成
+       「两侧有墙的空格」，旧写法把它们一直算作缺口；
+    2. **围墙已收工就归零** —— 建满 ``build.wall_max``（线上是 12/12）后，墙线上
+       剩下的可建格再也不会被砌，却仍满足「两侧 ≥2 面墙」而被永久计入。这就是线上
+       ``wall_fix=gap(1)`` 在墙明明砌完之后还挂着的直接原因。
+    """
     line = list(wall_line(view, None, None, None, _threat_dir(view, state)))
+    gaps = () if _wall_done(view, state, config) else _gap_cells(view, state, line, config)
     return (
         f"breach({len(_breach_cells(view, state))})"
-        f"|gap({len(_gap_cells(view, state, line, config))})"
+        f"|gap({len(gaps)})"
         f"|repair({_damaged_walls(view, config)})"
     )
 
@@ -549,14 +592,17 @@ def _wall_gate(view: WorldView, config: Config | None, state: EconomyState) -> s
     """围墙当前卡在哪一步：直接回答「为什么这回合 issued=none」。
 
     前缀带上墙优先开关与全队囤石目标，线上一眼能看出「速度慢」时是模式没生效、
-    还是石头没囤够（``stone_quota``）。
+    还是石头没囤够（``keep``）。``first=on/off`` 是**时段判定**的结果：过了
+    ``build.wall_first_until_round``（默认 40）或墙已收工都是 ``off`` —— 这正是
+    「金币为什么开始流动」的第一个可观测证据。
 
     两种收工要分开显示：``done`` = 建满了分母；``done:no_cell`` = 分母没建满但推断
     黄区里再也找不出候选格（``build.wall_done_when_no_cell`` 生效）。混成一个
     ``done`` 会让人误以为墙砌够了。
     """
-    mode = "on" if _flag(config, "build.wall_first", WALL_FIRST) else "off"
-    prefix = f"first={mode},quota={_stone_quota(view, state, config)}:"
+    mode = "on" if _wall_first_active(view, state, config) else "off"
+    limit = _int_config(config, "build.wall_first_until_round", WALL_FIRST_UNTIL_ROUND)
+    prefix = f"first={mode},until={limit},keep={_stone_reserve(view, state, config)}:"
     if not _flag(config, "build.wall_enabled", True):
         return prefix + "disabled"
     if len(view.own_walls()) >= _wall_target(view, state, config):
@@ -569,7 +615,7 @@ def _wall_gate(view: WorldView, config: Config | None, state: EconomyState) -> s
             return prefix + f"probe_denied({state.wall_probes}/{budget})"
         if not _wall_window(view, config):
             start = _int_config(config, "build.wall_probe_from", WALL_PROBE_FROM)
-            now = (view.round_no - 1) % DAY_LENGTH
+            now = _day_round(view)
             return prefix + f"wait_window(r{now}<r{start})"
     if not _wall_line_free(view, state, config):
         return prefix + "line_empty"
@@ -648,7 +694,9 @@ def _work_orders(
     墙优先模式（``build.wall_first``）下这条规矩只在**武器没插满之前**成立：
     武器约 3~5 回合就能插满、且只有 3 座（用户策略），插满后两个工人全部并入
     「采石 → 砌墙」管道（见 ``_plan_worker``）—— 围墙上限 12 堵、每堵 1 石头，
-    多一个人手就是多一倍砌墙速度。
+    多一个人手就是多一倍砌墙速度。这条管道只在白天前段开着
+    （``build.wall_first_until_round``）：过了时间点或墙已收工，``_stone_pipeline``
+    即关闭，分工自动退回「建造者 + 经济」的普通形态。
     """
     if not workers:
         return {}
@@ -731,6 +779,40 @@ def _wall_ready(view: WorldView, state: EconomyState, config: Config | None) -> 
     return state.wall_probes < _int_config(config, "build.wall_probe_budget", WALL_PROBE_BUDGET)
 
 
+def _day_round(view: WorldView) -> int:
+    """白天第几回合（0 起）：与 ``_wall_window`` **同一口径**（``round_no`` 按天取模）。
+
+    一天 130 回合（白天 70 + 夜晚 60，任务书 §4.2），所以 ``(round_no - 1) % 130``
+    在白天是 0..69、夜里是 70..129；两个时间闸门必须用同一个换算，否则「第 40 回合」
+    在日志和判定里会各说各话。
+    """
+    return (view.round_no - 1) % DAY_LENGTH
+
+
+def _wall_first_active(view: WorldView, state: EconomyState, config: Config | None) -> bool:
+    """当前是否处于「墙优先」时段（``build.wall_first`` + 时间窗 + 未收工）。
+
+    这是墙优先的**唯一总闸门**，``_needs_stone`` / ``_stone_pipeline`` /
+    ``_stone_reserve`` 三处共用，保证「要不要优先采石」只有一套口径。
+
+    三种返回 False 的情形：
+    1. 开关关掉（``build.wall_first=false``，运维回退旧行为）；
+    2. **围墙已收工**（沿用 ``_wall_done``：建满分母，或推断黄区再无候选格）——
+       与回合无关，砌完了当然立刻停止采石；
+    3. 白天已过 ``build.wall_first_until_round``（默认 40）。线上事故 issue #2 的根因
+       就是全天墙优先：全队一直采石 → 没人挖铜铁 → 卖不出钱 → 20 金围墙券买不起 →
+       武器/围墙永远 L1。前段铺墙、后段转收入，金币才会流动起来。
+    """
+    if not _flag(config, "build.wall_first", WALL_FIRST):
+        return False
+    if _wall_done(view, state, config):
+        return False
+    if not view.is_day():
+        return False
+    limit = _int_config(config, "build.wall_first_until_round", WALL_FIRST_UNTIL_ROUND)
+    return _day_round(view) < limit
+
+
 def _stone_quota(view: WorldView, state: EconomyState, config: Config | None) -> int:
     """墙优先模式下**全队**要持续囤到的石头量：``wall_stone_batch × 工人数``。
 
@@ -754,10 +836,16 @@ def _stone_reserve(view: WorldView, state: EconomyState, config: Config | None) 
 
     墙优先模式（``build.wall_first``）下换成 ``_stone_quota``：全队每个工人都要
     能各带一批，否则总有一人在等料（线上实测「墙建得太慢」的直接原因）。
+
+    墙优先**按时段生效**（``_wall_first_active``）：白天第
+    ``build.wall_first_until_round`` 回合起退出该模式，留石量随之回到
+    ``economy.stone_reserve`` 口径。窗口外的这个 ``keep`` **只决定「顺路砌墙时
+    手里留几块」**，不再意味着「不够就去采」—— 采石的总闸门在 ``_needs_stone``，
+    它在窗口外一律返回否（否则工人会被从铜矿反复拉回石矿，金币起不来）。
     """
     if not _flag(config, "build.wall_enabled", True):
         return 0  # 不修墙就不必留石头，全部可以换钱
-    if _flag(config, "build.wall_first", WALL_FIRST):
+    if _wall_first_active(view, state, config):
         return _stone_quota(view, state, config)
     remaining = _wall_remaining(view, state, config)
     cap = _int_config(config, "economy.stone_reserve", STONE_RESERVE)
@@ -778,8 +866,12 @@ def _stone_pipeline(
     条件（缺一不可）：墙优先模式开、这名工人有资格施工（``order``）、
     场上还有墙要修、武器阶段已结束（先把 3 座武器插满，用户策略）、
     而且**场上真有矿可采**（没矿时不能为了囤石头放弃贩卖，否则金币与石头双输）。
+
+    墙优先按时段生效（``_wall_first_active``）：白天第
+    ``build.wall_first_until_round`` 回合起这条管道关闭，全队转回普通经济
+    （采铜/铁 → 成批卖给小贩 → 攒钱买券），破口与顺路砌墙不受影响。
     """
-    if not _flag(config, "build.wall_first", WALL_FIRST):
+    if not _wall_first_active(view, state, config):
         return False
     if order not in ("build", "econ", "shop"):
         return False
@@ -915,7 +1007,9 @@ def _plan_worker(
     武器插满后**两个工人**都走这条管道 —— 攒批仍然保留（一次到位连砌，避免
     「采一块砌一块」的来回空转），但同一时刻最多放一个人离开矿区去墙线：
     谁先攒够一批谁去砌，另一个接着采石。线上实测的瓶颈是**砌墙速度**，不是金币，
-    所以这一模式下石头永不「备够就变现」。
+    所以在**白天前段**（``build.wall_first_until_round``，默认第 40 回合之前）
+    石头永不「备够就变现」。过了这个时间点或墙已收工，``_stone_pipeline`` 关闭，
+    回到「采铜/铁 → 成批贩卖 → 买券」的普通经济（金币锁死的根因，见 issue #2）。
 
     ``(None, None)`` = 本回合既没有指令也没有移动目标，**只可能**来自这几条分支
     （``stalls`` 会被写成原因，plan_economy 据此做保底与 D-02 诊断）：
@@ -1057,42 +1151,55 @@ def _line_already_held(
 def _needs_stone(
     view: WorldView, state: EconomyState, config: Config | None, order: str, worker: Role
 ) -> bool:
-    """背包里的石头是否还没到储备量（没到 → 优先采石；到了 → 专心挖铜铁换钱）。
+    """「石头不够、值得专门去采石」是否成立（False = 本回合按铜 > 铁 > 石挑矿）。
 
-    旧实现是「只要还有墙没修就永远优先采石」，于是石头一直占着背包、卖不出去，
-    金币从开局第 5 回合起恒为 0。改成只看储备量：备够 2 块就转去挖铜/铁换钱。
+    **只有 ``_wall_first_active`` 为真（墙优先窗口内）才允许拿「石头未达储备」当
+    理由去采石**。窗口外（白天第 >= ``build.wall_first_until_round`` 回合）一律
+    返回 False，直接落到 ``_preferred_mine`` 的 copper > iron 优先级，去挖能变现
+    的矿、按 ``_plan_sell``/``economy.sell_batch`` 成批卖给小贩。
 
-    墙优先模式（``build.wall_first``）反过来：只要墙没修完就**一直**采石
-    （目标量 ``wall_stone_batch × 工人数``），因为线上实测瓶颈是砌墙速度而非金币。
+    为什么窗口外必须一刀切：只把 ``_stone_reserve`` 调小是不够的 —— 全队石头只要
+    低于 ``economy.stone_reserve``（默认 4），``_needs_stone`` 就又把工人从铜矿拉
+    回石矿，采到的石头又几乎全被留下修墙、卖不出去，于是「下午归收入」名存实亡
+    （模拟器 seed 1 实测：D1 末 gold 1、全队石头长期在储备线以下）。退出窗口 = 停止
+    **主动**采石，但**顺路砌墙**（``_plan_build_wall(adjacent_only=True)``）与
+    **破口/缺口优先重建**都在本函数之外，照旧生效。
+
+    窗口外不会真的「一块石头都没有」：``_preferred_mine`` 的兜底优先级仍含 stone，
+    铜矿/铁矿都不可用时照采不误；墙上已有的石头也仍能顺路砌掉。次日白天第 1 回合
+    ``_day_round`` 归零、``_wall_first_active`` 重新为真，墙优先窗口按天重开。
+
+    ``build.wall_first=false``（运维回退开关）保留旧口径：石头未达
+    ``economy.stone_reserve`` 就继续采石，一行旧行为都不动。
     """
     if not _flag(config, "build.wall_enabled", True):
         return False
     if order not in ("build", "econ", "shop"):
         return False
-    wall_first = _flag(config, "build.wall_first", WALL_FIRST)
-    if wall_first:
-        # 墙优先：武器阶段结束（插满 3 座 / 蓝区无格）后全队持续采石，直到囤够
-        # 「每名工人一批」。有人攒满一批却不能动身时（比如同伴正在墙线），其余人
-        # 继续采石 —— 始终有料可用。
-        max_weapons = _int_config(config, "build.day1_max_weapons", MAX_WEAPONS)
-        if not _weapons_done(view, config, max_weapons):
+    if not _flag(config, "build.wall_first", WALL_FIRST):
+        # 回退路径：建造者手上还有武器要建就先专心攒金币，别去挖石头。
+        if order == "build" and len(view.own_weapons()) < _int_config(
+            config, "build.day1_max_weapons", MAX_WEAPONS
+        ):
             return False
+        # **按全队存石量**判断，而不是各人手里的量：储备是「全队备够」的概念，
+        # 否则 2 个工人各囤 4 块（共 8 块）才罢休 —— 真机实测就是「只采石头、
+        # 一整天没有铜铁收入」。全队够了就让所有人转去挖铜/铁换钱。
         total_stone = sum(w.backpack.count("stone") for w in view.own_workers())
-        if total_stone < _stone_quota(view, state, config):
-            return True
-        batch = _int_config(config, "build.wall_stone_batch", WALL_STONE_BATCH)
-        return not any(w.backpack.count("stone") >= max(1, batch) for w in view.own_workers())
-    # 旧行为（``build.wall_first=false``）原样保留：建造者手上还有武器要建就先
-    # 专心攒金币，别去挖石头。
-    if order == "build" and len(view.own_weapons()) < _int_config(
-        config, "build.day1_max_weapons", MAX_WEAPONS
-    ):
+        return total_stone < _stone_reserve(view, state, config)
+    if not _wall_first_active(view, state, config):
+        return False  # 窗口外：不主动采石，去挖铜铁变现（顺路砌墙/补破口不受影响）
+    # 墙优先窗口内：武器阶段结束（插满 3 座 / 蓝区无格）后全队持续采石，直到囤够
+    # 「每名工人一批」。有人攒满一批却不能动身时（比如同伴正在墙线），其余人
+    # 继续采石 —— 始终有料可用。
+    max_weapons = _int_config(config, "build.day1_max_weapons", MAX_WEAPONS)
+    if not _weapons_done(view, config, max_weapons):
         return False
-    # **按全队存石量**判断，而不是各人手里的量：储备是「全队备够」的概念，
-    # 否则 2 个工人各囤 4 块（共 8 块）才罢休 —— 真机实测就是「只采石头、
-    # 一整天没有铜铁收入」。全队够了就让所有人转去挖铜/铁换钱。
     total_stone = sum(w.backpack.count("stone") for w in view.own_workers())
-    return total_stone < _stone_reserve(view, state, config)
+    if total_stone < _stone_quota(view, state, config):
+        return True
+    batch = _int_config(config, "build.wall_stone_batch", WALL_STONE_BATCH)
+    return not any(w.backpack.count("stone") >= max(1, batch) for w in view.own_workers())
 
 
 def _preferred_mine(

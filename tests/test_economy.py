@@ -520,6 +520,208 @@ def test_wall_first_mode_buys_wall_voucher_before_weapons_are_maxed() -> None:
     assert buys[0].name == "WallUpgradeVoucher1", buys[0].name
 
 
+# ------------------------------------------------- 墙优先时段（issue #2：金币锁死）
+
+
+def _wall_first_clock_view(*, round_no: int) -> Any:
+    """墙优先时段测试的公共视图：3 座武器已插满（管道已开），两名工人各背
+    4 块石头 + 1 块铜。
+
+    * 石头 4 块：**未到**墙优先的全队配额 6（``wall_stone_batch × 工人数``），
+      但**已达**普通经济口径的 ``economy.stone_reserve``（4）—— 同一份背包正好
+      卡在两种口径的分界上，于是「只换回合号」就能对比出模式差异；
+    * 背 1 块铜：``_plan_worker`` 的「专程跑墙线」要求 ``_cargo == 0``，带着铜才会
+      落到「本回合到底采哪种矿」这一层，测试才真的在考「要不要优先采石」；
+    * 工人 10010 贴在墙线旁（(20,17) 紧邻候选格 (20,18)）—— 墙优先模式下它会被
+      ``_line_already_held`` 选去砌墙（错峰），于是远端的 10012 留在矿区；
+    * 工人 10012 在 (5,5)，同时挨着石矿 (6,5) 与铜矿 (5,6)：两种口径各挑各的矿。
+    """
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(10040, "railgun", 22, 22, 1000, level=1, attackPower=10, attackRange=6),
+        _role(10041, "rocket", 24, 22, 1000, level=1, attackPower=20, attackRange=10),
+        _role(10042, "gatling", 26, 22, 1000, level=1, attackPower=10, attackRange=3),
+        _role(10010, "worker", 20, 17, 220, backpack=["stone"] * 4 + ["copper"]),
+        _role(10012, "worker", 5, 5, 220, backpack=["stone"] * 4 + ["copper"]),
+    ]
+    zones = [_mine(6, 5, "stone"), _mine(5, 6, "copper")]
+    return _view(roles, zones=zones, gold=0, round_no=round_no)
+
+
+def test_wall_first_window_mines_stone_before_the_limit() -> None:
+    """Given 武器已插满、墙未建满、工人背包石头 4 块（未到全队配额 6），
+    When 白天第 20 回合（< ``build.wall_first_until_round``），
+    Then 留在矿区的工人去采**石**（墙优先模式仍然成立）。
+
+    回归 issue #2：新增的时段闸门不能把前段的「全力以赴砌墙」也一起关掉。
+    """
+    view = _wall_first_clock_view(round_no=20)
+    cmd = plan_economy(view, None, EconomyState())[10012]
+    assert enum_to_str(cmd.action) == "collect", cmd
+    assert view.mine_at(cmd.targetPos[0]) == "stone", cmd.targetPos
+
+
+def test_wall_first_window_ends_and_income_mining_starts() -> None:
+    """Given 同上（武器已插满、墙未建满、石头 4 块未满额），
+    When 白天第 41 回合（>= 40，已退出墙优先），Then 同一名工人改采**铜**。
+
+    这是 issue #2 的修复本体：全天墙优先会让全队一直采石 → 没人采铜铁 → 卖不出钱
+    → 20 金围墙券买不起 → 武器/围墙永远 L1。过了时间点必须回到普通经济。
+    """
+    view = _wall_first_clock_view(round_no=41)
+    cmd = plan_economy(view, None, EconomyState())[10012]
+    assert enum_to_str(cmd.action) == "collect", cmd
+    assert view.mine_at(cmd.targetPos[0]) == "copper", cmd.targetPos
+
+
+def _bare_hands_view(*, round_no: int) -> Any:
+    """「空手」时钟视图：3 座武器已插满（采石管道已开）、墙未建满、两名工人**背包全空**。
+
+    与 ``_wall_first_clock_view`` 的区别正是本组回归要考的点：那里的工人各背 4 块
+    石头，已经**够** ``economy.stone_reserve``，两种口径都判定「不用再采石」——旧
+    代码在那里也能过。只有把石头压到储备量以下（0 块 < 4），旧口径的
+    ``total_stone < _stone_reserve`` 才会为真、把工人拽回石矿。真人模拟器里 D1 的
+    瓶颈正是这种状态：上午把石头砌光了，下午一挖铜就又被判定「石头不够」。
+    """
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(10040, "railgun", 22, 22, 1000, level=1, attackPower=10, attackRange=6),
+        _role(10041, "rocket", 24, 22, 1000, level=1, attackPower=20, attackRange=10),
+        _role(10042, "gatling", 26, 22, 1000, level=1, attackPower=10, attackRange=3),
+        _role(10010, "worker", 20, 17, 220),  # 贴墙线，负责施工
+        _role(10012, "worker", 5, 5, 220),  # 同时挨着石矿 (6,5) 与铜矿 (5,6)
+    ]
+    zones = [_mine(6, 5, "stone"), _mine(5, 6, "copper")]
+    return _view(roles, zones=zones, gold=0, round_no=round_no)
+
+
+def test_window_mines_stone_when_below_reserve() -> None:
+    """Given 武器已插满、墙未建满、全队石头 0 块（低于 ``economy.stone_reserve``），
+    When 白天第 20 回合（**在**墙优先窗口内），Then 矿区工人去采**石**。
+
+    这是窗口内行为不变的钉子：修复「下午归收入」不能把上午的「全队囤石」也关掉。
+    """
+    view = _bare_hands_view(round_no=20)
+    cmd = plan_economy(view, None, EconomyState())[10012]
+    assert enum_to_str(cmd.action) == "collect", cmd
+    assert view.mine_at(cmd.targetPos[0]) == "stone", cmd.targetPos
+
+
+def test_window_end_mines_income_ore_when_below_reserve() -> None:
+    """Given 同上（全队石头 0 块，**低于** ``economy.stone_reserve`` 4 块），
+    When 白天第 41 回合（>= ``build.wall_first_until_round``，已退出窗口），
+    Then 同一名工人改采**铜** —— 「石头未达储备」不再是主动采石的理由。
+
+    这是本轮修复的本体：旧实现退出窗口后仍按 ``economy.stone_reserve`` 办事，
+    全队石头 < 4 就把工人从铜矿反复拉回石矿，收入起不来（模拟器实测 D1 末
+    gold 1、walls 8）。窗口外必须一刀切换成 copper > iron > stone 的变现口径。
+    """
+    view = _bare_hands_view(round_no=41)
+    cmd = plan_economy(view, None, EconomyState())[10012]
+    assert enum_to_str(cmd.action) == "collect", cmd
+    assert view.mine_at(cmd.targetPos[0]) == "copper", cmd.targetPos
+
+
+def test_second_day_re_enters_the_wall_first_window() -> None:
+    """Given 同一天视图只在回合号上换到**次日开局的白天**（第 141 回合 = 第 2 天白天第 11 回合），
+    When 规划经济，Then 工人又去采**石** —— 墙优先窗口按天重开。
+
+    回答任务书里的存疑点：「退出窗口后不再主动采石，会不会导致墙没建满就永远没料」。
+    不会：``_wall_first_active`` 的 ``_day_round`` 是 ``(round_no - 1) % 130``，次日
+    白天第 1 回合归零、重新 < ``build.wall_first_until_round``，每天都有 40 个回合的
+    采石窗口。注意 141 = 130 + 11：第 2 天从第 131 回合开始，所以它落在白天第 11 回合。
+    """
+    view = _bare_hands_view(round_no=141)
+    cmd = plan_economy(view, None, EconomyState())[10012]
+    assert enum_to_str(cmd.action) == "collect", cmd
+    assert view.mine_at(cmd.targetPos[0]) == "stone", cmd.targetPos
+
+
+def test_window_end_still_builds_wall_when_stone_is_in_hand() -> None:
+    """Given 已退出墙优先窗口（白天第 60 回合）、背包里已有 3 块石头、人贴候选格旁，
+    When 规划经济，Then 照旧**顺路砌墙**（build/wall），不因为退出窗口就停手。
+
+    硬约束①：退出窗口只影响「要不要主动去采石」，顺路砌墙不受影响。
+    """
+    roles = [STATION, _role(10010, "worker", 20, 17, 220, backpack=["stone"] * 3)]
+    view = _view(roles, round_no=60, zones=[_vendor(30, 30)])
+    cmd = plan_economy(view, None, EconomyState())[10010]
+    target = cmd.targetPos[0] if cmd.targetPos else None
+    assert enum_to_str(cmd.action) == "build", cmd
+    assert cmd.name == "wall", cmd
+    # 顺路砌墙的谓词就是「目标格在候选防线里」且「人正好贴在那格旁」。
+    assert target in set(_wall_candidates(view, EconomyState(), set())), cmd
+    assert chebyshev(Pos(20, 17), target) <= 1, cmd
+
+
+def test_window_end_still_rebuilds_breach_first() -> None:
+    """Given 记忆里 (20,18) 是我们砌过、现在已毁的墙（破口），白天第 60 回合（窗口外）、
+    When 规划经济，Then 仍然优先补这个破口（build/wall 指向破口格）。
+
+    硬约束②：退出窗口后破口/缺口的**排序优先级**必须原样保留 —— 差别的只是
+    「不再为了它专门跑石矿」，不是「不补破口」。
+    """
+    roles = [STATION, _role(10010, "worker", 20, 17, 220, backpack=["stone"] * 3)]
+    view = _view(roles, round_no=60, zones=[_vendor(30, 30)])
+    state = EconomyState(wall_memory={(20, 18)})
+    state.wall_dir = (1, 0)
+    cmd = plan_economy(view, None, state)[10010]
+    assert enum_to_str(cmd.action) == "build", cmd
+    assert cmd.name == "wall", cmd
+    assert cmd.targetPos == (Pos(20, 18),), cmd
+    assert any("wall_fix=breach(1)" in note for note in state.notes), state.notes
+
+
+def test_wall_project_done_exits_wall_first_before_the_round_limit() -> None:
+    """Given 围墙已建满分母（12/12）、白天第 20 回合（**还在**时间窗内），
+    When 规划经济，Then 仍然退出墙优先、工人去采铜铁。
+
+    沿用 ``_wall_done`` 的例外：墙砌完了就没必要再囤石头，不必等到第 40 回合。
+    """
+    template = _wall_first_clock_view(round_no=20)
+    line = _wall_candidates(template, EconomyState(), set())
+    assert len(line) >= 12, f"分母应能建满 12 堵，实际候选 {len(line)}"
+    built = [
+        _role(40000 + index, "wall", cell.x, cell.y, 1000, level=1)
+        for index, cell in enumerate(line[:12])
+    ]
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(10040, "railgun", 22, 22, 1000, level=1, attackPower=10, attackRange=6),
+        _role(10041, "rocket", 24, 22, 1000, level=1, attackPower=20, attackRange=10),
+        _role(10042, "gatling", 26, 22, 1000, level=1, attackPower=10, attackRange=3),
+        _role(10010, "worker", 20, 17, 220, backpack=["stone"] * 4 + ["copper"]),
+        _role(10012, "worker", 5, 5, 220, backpack=["stone"] * 4 + ["copper"]),
+        *built,
+    ]
+    view = _view(
+        roles, zones=[_mine(6, 5, "stone"), _mine(5, 6, "copper")], gold=0, round_no=20
+    )
+    cmd = plan_economy(view, None, EconomyState())[10012]
+    assert enum_to_str(cmd.action) == "collect", cmd
+    assert view.mine_at(cmd.targetPos[0]) in ("copper", "iron"), cmd.targetPos
+
+
+def test_breach_rebuild_survives_the_wall_first_window() -> None:
+    """Given 记忆里 (20,18) 是我们砌过、现在没了的墙（破口），
+    When 白天第 20 / 41 / 60 回合（时段闸门两侧），
+    Then 工人始终优先补这个破口 —— 转收入不等于不补破口。
+
+    这是任务书里的硬约束：退出墙优先只影响「要不要优先采石」，顺路砌墙与
+    破口/缺口的优先重建必须保持。
+    """
+    for round_no in (20, 41, 60):
+        roles = [STATION, _role(10010, "worker", 20, 17, 220, backpack=["stone"] * 3)]
+        view = _view(roles, round_no=round_no)
+        state = EconomyState(wall_memory={(20, 18)})
+        state.wall_dir = (1, 0)
+        cmd = plan_economy(view, None, state)[10010]
+        assert enum_to_str(cmd.action) == "build", (round_no, cmd)
+        assert cmd.name == "wall", (round_no, cmd)
+        assert cmd.targetPos == (Pos(20, 18),), (round_no, cmd)
+        assert any("wall_fix=breach(1)" in note for note in state.notes), state.notes
+
+
 def test_breach_cell_is_rebuilt_before_normal_ring_order() -> None:
     """Given 记忆里 (20,18) 是我们砌过的墙位、但现在那里没有墙（夜里被打掉），
     When 规划经济，Then 该破口排在正常「方环由内向外」候选之前，工人直接去重建。
@@ -598,6 +800,58 @@ def test_gap_cell_is_detected_without_wall_memory() -> None:
     assert enum_to_str(cmd.action) == "build"
     assert cmd.targetPos == (Pos(23, 20),), "两侧都有墙的空格 = 缺口，优先补"
     assert any("wall_fix=breach(0)|gap(1)" in note for note in state.notes), state.notes
+
+
+def test_wall_fix_gap_note_ignores_cells_that_cannot_be_built() -> None:
+    """Given 墙线上 (23,20) 两侧都有己方围墙，但那格上站着一个己方单位
+    （永远建不了），When 规划经济，Then D-02 的 ``gap`` 计为 0。
+
+    这是「``wall_fix=gap(N)`` 从不归零」的第一条根因：``_wall_fix_note`` 用的是
+    **未过滤**的墙线（``wall_line`` 只按 exclude 参数过滤，而它没传），于是被单位
+    占着、被拉黑、整圈被证伪的格都会被一直算成「还没补的缺口」。改成与候选格
+    （``_wall_candidates``）同一套过滤口径后，数字才是「真的还能补几格」。
+    """
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(40001, "wall", 23, 19, 1000, level=1),
+        _role(40002, "wall", 23, 21, 1000, level=1),
+        _role(10010, "worker", 22, 20, 220, backpack=["stone"] * 3),
+        _role(10012, "worker", 23, 20, 220, backpack=["stone"] * 3),  # 占着缺口格
+    ]
+    view = _view(roles, gold=0)
+    state = EconomyState()
+    state.wall_dir = (1, 0)
+    plan_economy(view, None, state)
+    assert any("wall_fix=breach(0)|gap(0)" in note for note in state.notes), state.notes
+
+
+def test_wall_fix_gap_note_is_zero_once_the_wall_target_is_reached() -> None:
+    """Given 围墙已建满分母（12/12），但墙线上还剩一个「两侧有墙」的可建格，
+    When 规划经济，Then ``gap`` 归零（工程收工的格不再被算作缺口）。
+
+    第二条根因（本地模拟复现）：``build.wall_max`` 封顶后，墙线上剩下的可建格
+    再也不会被砌（``_wall_done`` 已收工），旧写法却因为它「两侧 ≥2 面墙」而永久
+    计入 —— 线上 ``wall_fix=gap(1)`` 在墙明明砌完之后还一直挂着。
+    """
+    template = _wall_first_clock_view(round_no=61)
+    line = _wall_candidates(template, EconomyState(), set())
+    built = [
+        _role(40000 + index, "wall", cell.x, cell.y, 1000, level=1)
+        for index, cell in enumerate(line[:12])
+    ]
+    roles = [
+        _role(10013, "station", 20, 20, 1500, level=1),
+        _role(10040, "railgun", 22, 22, 1000, level=1, attackPower=10, attackRange=6),
+        _role(10041, "rocket", 24, 22, 1000, level=1, attackPower=20, attackRange=10),
+        _role(10042, "gatling", 26, 22, 1000, level=1, attackPower=10, attackRange=3),
+        _role(10010, "worker", 20, 17, 220, backpack=["stone"] * 4 + ["copper"]),
+        _role(10012, "worker", 5, 5, 220, backpack=["stone"] * 4 + ["copper"]),
+        *built,
+    ]
+    view = _view(roles, zones=[_mine(6, 5, "stone")], gold=0, round_no=61)
+    state = EconomyState()
+    plan_economy(view, None, state)
+    assert any("gap(0)" in note for note in state.notes), state.notes
 
 
 def test_damaged_wall_worker_yields_turn_to_wall_fixer() -> None:

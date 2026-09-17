@@ -18,6 +18,7 @@ from future_war.config import Config
 from future_war.models import Action, Role, RoleCommand, enum_to_str
 from future_war.core.world_map import chebyshev
 from future_war.core.world_view import WorldView
+from future_war.strategy.combat import attack_positions
 
 SUMMON_ORDER: Final = "SmallRobotSummonOrder"
 DEFAULT_SUMMON_CAP: Final = 10
@@ -85,7 +86,7 @@ def _plan_base_snipe(
             commands[weapon.id] = RoleCommand(
                 action=Action.ATTACK,
                 controllerId=str(controller.id),
-                targetPos=(target,),
+                targetPos=attack_positions(weapon, [target]),
             )
     return commands
 
@@ -108,6 +109,9 @@ def _plan_role_snipe(
     敌方单位阵亡后要等「次日白天开始后 20 回合」才复活、且背包保留（§4.5.2），
     所以打断一次就等于废掉对手近 20 回合的经济/任务链。默认阈值让这条只在
     「一发能收掉」时才用，避免为了骚扰而牺牲清波火力。
+
+    目标位置个数同样按武器等级（接口 §2.2，见 ``combat.target_slots``）：L1 恒 1 个
+    （与旧行为一致），加特林/火箭 L2/L3 在残血目标足够时才发多个。
     """
     if not _flag(config, "offense.role_snipe_enabled", False):
         return {}
@@ -121,11 +125,11 @@ def _plan_role_snipe(
     for weapon, controller in _armed(view, exclude):
         in_range = [e for e in enemies if chebyshev(e.pos, weapon.pos) <= weapon.attackRange]
         if in_range:
-            target = min(in_range, key=lambda e: (chebyshev(e.pos, weapon.pos), e.id))
+            ranked = sorted(in_range, key=lambda e: (chebyshev(e.pos, weapon.pos), e.id))
             commands[weapon.id] = RoleCommand(
                 action=Action.ATTACK,
                 controllerId=str(controller.id),
-                targetPos=(target.pos,),
+                targetPos=attack_positions(weapon, [e.pos for e in ranked]),
             )
     return commands
 

@@ -29,6 +29,7 @@ DEFAULT_CONFIG: Final[dict[str, JsonValue]] = {
         "wall_probe_from": 0,
         "wall_stone_batch": 3,
         "wall_first": True,
+        "wall_first_until_round": 40,
         "wall_breach_first": True,
         "wall_breach_rearm_threat": True,
         "wall_gap_min_walls": 2,

@@ -5,7 +5,9 @@
 基地待命。白天不发攻击（§4.4 攻击仅夜晚可用）。
 
 一个角色一回合只能操控一座武器；攻击指令以**武器 id** 为键、``controllerId``
-为操控角色（接口 §2.2）。移动统一走 ``core.nav.resolve_moves``。仅用标准库。
+为操控角色（接口 §2.2）。``targetPos`` 的**个数**由武器等级决定：加特林/火箭
+L2/L3 按等级发 N 个目标位置，其余（含全部 L1）恒发 1 个 —— 详见
+:func:`target_slots`。移动统一走 ``core.nav.resolve_moves``。仅用标准库。
 """
 
 from __future__ import annotations
@@ -29,6 +31,48 @@ DAY_ROUNDS: Final = 70
 # 夜晚前若干回合：无操控者的武器也要派人过去（而不是等敌人进射程才动身）。
 # 机器人从地图边缘走到基地需要十几回合，正好够角色跑到操控位。
 STAGING_NIGHT_ROUNDS: Final = 25
+# 接口 §2.2 注：**加特林炮台 / 火箭发射台**的 ``targetPos`` 可传多个目标位置，
+# 个数 = 当前武器等级；电磁狙击炮只能传 1 个。武器等级上限是 3（任务书 §4.5.1），
+# 这里把槽位数也封顶，避免非法/超界的等级值把目标数拉爆。
+_MULTI_TARGET_KINDS: Final = frozenset({"gatling", "rocket"})
+_MAX_TARGET_SLOTS: Final = 3
+
+
+def target_slots(weapon: Role, candidate_count: int) -> int:
+    """这座武器本回合要发几个目标位置（接口 §2.2 的 ``targetPos`` 语义）。
+
+    ``candidate_count`` = 射程内**可供选择**的目标数（调用方已按优先级排好序）。
+
+    为什么按等级发：现在场上武器都是 **level 1**，我们恒发 1 个目标位置，所以文档
+    这条注从没暴露；一旦买了升级券（用户策略「后续先升级城墙」，武器也会跟着升），
+    加特林/火箭 L2 要 2 个、L3 要 3 个位置才符合文档。形状不对可能直接被判非法，
+    那是「开局就被扣异常」的致命代价。
+
+    为什么 L1 必须逐字节不变：我们无法在本地验证判题器对形状的实际校验，因此
+    **level <= 1 一律 1 个**（railgun 亦同）—— 即便我对文档的理解有偏差，也绝不动
+    今天的线上行为。
+
+    为什么目标不足等级时退回 1 个：文档只规定了「目标位置数 = 等级」，没说目标不够
+    时能否少发。发一个长度 2 的数组给 L3 武器是**文档里既没说合法、也没说非法**的
+    灰色形状，风险远大于收益；因此返回值只有两种：**恰好 1 个**，或**恰好等于等级**。
+    """
+    if candidate_count <= 1:
+        return 1
+    if enum_to_str(weapon.roleType) not in _MULTI_TARGET_KINDS:
+        return 1
+    level = weapon.level if isinstance(weapon.level, int) else 1
+    if level <= 1 or candidate_count < level:
+        return 1
+    return min(level, _MAX_TARGET_SLOTS)
+
+
+def attack_positions(weapon: Role, ranked: list[Pos]) -> tuple[Pos, ...]:
+    """按 `target_slots` 裁出 ``targetPos``：``ranked`` 已按本模块的目标优先级排好。
+
+    单一入口，进攻/防御两条火力线共用，``level==1`` 时恒等于 ``ranked[:1]``
+    （= 旧实现的 ``(target.pos,)``）。
+    """
+    return tuple(ranked[: target_slots(weapon, len(ranked))])
 
 
 def plan_defense(
@@ -88,11 +132,11 @@ def plan_defense(
             continue
         assigned.add(controller.id)
         armed.append((weapon, controller))
-    for weapon, controller, target in _select_targets(armed, robots, config):
+    for weapon, controller, targets in _select_targets(armed, robots, config):
         commands[weapon.id] = RoleCommand(
             action=Action.ATTACK,
             controllerId=str(controller.id),
-            targetPos=(target.pos,),
+            targetPos=tuple(target.pos for target in targets),
         )
     _send_home(view, mobile, assigned, goals, config)
     for uid, step in resolve_moves(view, goals).items():
@@ -194,11 +238,17 @@ _DEFAULT_PRIORITY: Final = ("bossRobot", "largeRobot", "middleRobot", "smallRobo
 
 def _select_targets(
     armed: list[tuple[Role, Role]], robots: list[RobotRole], config: Config | None
-) -> list[tuple[Role, Role, RobotRole]]:
-    """按优先级选目标，并避免多武器对同一目标溢出伤害（combat.overkill_avoidance）。"""
+) -> list[tuple[Role, Role, tuple[RobotRole, ...]]]:
+    """按优先级选目标，并避免多武器对同一目标溢出伤害（combat.overkill_avoidance）。
+
+    返回每座武器**本回合的全部目标**（元组）：L1 与电磁狙击炮恒为 1 个（与旧实现
+    逐字节一致），加特林/火箭 L2/L3 按等级取射程内优先级最高的 N 个（见
+    :func:`target_slots`）。多目标时按同一把优先级排序取前 N 个，并把伤害记到每个
+    被选中的目标上，后续武器仍然能看到「谁已经挨了多少」。
+    """
     order = _priority_order(config)
     claimed: dict[int, int] = {}
-    selections: list[tuple[Role, Role, RobotRole]] = []
+    selections: list[tuple[Role, Role, tuple[RobotRole, ...]]] = []
     for weapon, controller in armed:
         in_range = [
             r for r in robots if chebyshev(r.pos, weapon.pos) <= weapon.attackRange
@@ -206,12 +256,18 @@ def _select_targets(
         if not in_range:
             continue
         fresh = [r for r in in_range if r.health - claimed.get(r.id, 0) > 0]
-        target = min(
+        # 与旧实现同一个 key 与同一个候选池（``fresh or in_range``）：slots == 1 时
+        # ``sorted(...)[:1]`` 就是旧的 ``min(...)``，逐元素相同。slots 按**可用**候选
+        # 数算（而非原始射程内数量）：可用目标不足等级时只发 1 个，绝不发出
+        # 「长度介于 1 与等级之间」的灰色形状（见 ``target_slots``）。
+        ranked = sorted(
             fresh or in_range,
             key=lambda r: (_priority_key(r, order), chebyshev(r.pos, weapon.pos), r.id),
         )
-        claimed[target.id] = claimed.get(target.id, 0) + weapon.attackPower
-        selections.append((weapon, controller, target))
+        targets = tuple(ranked[: target_slots(weapon, len(ranked))])
+        for target in targets:
+            claimed[target.id] = claimed.get(target.id, 0) + weapon.attackPower
+        selections.append((weapon, controller, targets))
     return selections
 
 
